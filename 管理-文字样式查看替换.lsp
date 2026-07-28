@@ -1,0 +1,1518 @@
+;@name 文字样式检查
+;@group 文字工具
+;@desc 扫描图纸中所有文字样式，检测使用状态和字体文件可用性，支持一键替换缺失字体
+;@require ModelSpace
+;@require TextStyle
+;@require DimStyle
+
+(vl-load-com)
+
+;; ---------------- 全局常量 ----------------
+(setq *wkk-dcl-file* (strcat (getenv "TEMP") "\\wkk_dialog.dcl"))
+
+;; ---------------- 全局变量 ----------------
+;; 样式数据列表，每项为: (NAME FONT BIGFONT TTF FONTPATH MISSING USEDBY TEXTCOUNT DIMSTYLES)
+(setq *wkk-styles* nil)
+;; 替换目标字体名（用于显示）
+(setq *wkk-target-font* "SimSun-ExtB")
+;; 替换目标样式名（样张创建的样式，如 "WKK_BRLNSDB_SHX"）
+(setq *wkk-target-style* nil)
+
+;; ============================================================
+;;  调试支持
+;; ============================================================
+
+;; 调试开关：T 输出详细替换日志，nil 静默
+(setq *wkk-debug* T)
+
+;; 调试输出（受 *wkk-debug* 控制）
+(defun wkk:dbg (msg)
+  (if *wkk-debug*
+    (progn (princ msg) (princ "\n"))
+  )
+)
+
+;; 通过 Windows 注册表把 TrueType 字体名解析为实际文件
+;; 注册表: HKLM/HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts
+;;   - 系统字体值通常为文件名(如 "simsun.ttf")
+;;   - 用户字体值通常为完整路径(如 "C:\Users\...\Fonts\xxx.ttf")
+;; font-name: 字体名如 "SimSun-ExtB"
+;; 返回: 文件名或完整路径字符串，未找到返回 nil
+(defun wkk:resolve-ttf-file (font-name / vnames k v r result src)
+  (setq vnames (list
+    (strcat font-name " (TrueType)")
+    (strcat font-name " (OpenType)")
+    font-name))
+  (setq result nil)
+  (setq src nil)
+  (foreach k (list
+    "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts"
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts")
+    (foreach v vnames
+      (if (null result)
+        (progn
+          (setq r (vl-catch-all-apply 'vl-registry-read (list k v)))
+          (if (vl-catch-all-error-p r) (setq r nil))
+          (if (and r (/= r ""))
+            (progn
+              (setq result r)
+              (setq src (strcat k " | " v))
+            )
+          )
+        )
+      )
+    )
+  )
+  (if result
+    (wkk:dbg (strcat "  注册表解析: " font-name " => " result "  [" src "]"))
+    (wkk:dbg (strcat "  注册表解析: " font-name " => 未找到映射"))
+  )
+  result
+)
+
+;; 通过 entmod 直接修改 STYLE 符号表记录的字体
+;; 绕过 ActiveX vla-put-FontFile 的"文件处理器错误"限制
+;; name: 样式名  font-file: 字体文件名或完整路径(如 "simsun.ttf" 或 "C:\...\x.ttf")
+;; 组码 3 = 主字体文件, 组码 4 = 大字体文件
+;; 返回: T 成功 / nil 失败
+(defun wkk:set-style-font (name font-file / ename ed g3 g4 reread)
+  (setq ename (tblobjname "STYLE" name))
+  (if (null ename)
+    (progn
+      (wkk:dbg (strcat "    [失败] 未找到 STYLE 记录: " name))
+      nil
+    )
+    (progn
+      (setq ed (entget ename))
+      ;; 组码 3 = 主字体文件
+      (setq g3 (assoc 3 ed))
+      (if g3
+        (setq ed (subst (cons 3 font-file) g3 ed))
+        (setq ed (append ed (list (cons 3 font-file))))
+      )
+      ;; 组码 4 = 大字体文件，清空
+      (setq g4 (assoc 4 ed))
+      (if g4
+        (setq ed (subst (cons 4 "") g4 ed))
+      )
+      (setq ed (entmod ed))
+      (if (null ed)
+        (progn
+          (wkk:dbg (strcat "    [失败] entmod 返回 nil: " name))
+          nil
+        )
+        (progn
+          (entupd ename)
+          (setq reread (entget ename))
+          (setq g4 (assoc 4 reread))
+          (wkk:dbg (strcat "    [成功] " name
+                           "  组码3=" (cdr (assoc 3 reread))
+                           "  组码4=" (if g4 (cdr g4) "(无)")))
+          T
+        )
+      )
+    )
+  )
+)
+
+;; ============================================================
+;;  辅助函数
+;; ============================================================
+
+;; 检查字符串结尾
+(defun wkk:endswith-p (str suffix / slen)
+  (setq slen (strlen suffix))
+  (if (>= (strlen str) slen)
+    (= (substr str (1+ (- (strlen str) slen)) slen) suffix)
+    nil
+  )
+)
+
+;; 右填充到固定宽度（用于列对齐），返回 str + 空格补足至 width
+(defun wkk:pad-right (str width / pad-len result)
+  (setq pad-len (- width (strlen str)))
+  (setq result str)
+  (if (> pad-len 0)
+    (repeat pad-len
+      (setq result (strcat result " "))
+    )
+  )
+  result
+)
+
+;; 分割路径字符串（; 分隔）
+(defun wkk:split-path (str / result pos ch part)
+  (setq result '())
+  (if (and str (/= str ""))
+    (progn
+      (setq pos 1)
+      (setq part "")
+      (while (<= pos (strlen str))
+        (setq ch (substr str pos 1))
+        (if (= ch ";")
+          (progn
+            (if (/= part "")
+              (setq result (append result (list part)))
+            )
+            (setq part "")
+          )
+          (setq part (strcat part ch))
+        )
+        (setq pos (1+ pos))
+      )
+      (if (/= part "")
+        (setq result (append result (list part)))
+      )
+    )
+  )
+  result
+)
+
+;; ============================================================
+;;  字体文件查找
+;; ============================================================
+
+;; 在 AutoCAD 支持路径 + Windows Fonts + DWG 目录中查找字体文件
+;; fontname: 文件名（如 "hztxt.shx" 或 "SimSun"）
+;; 返回: 完整路径字符串，未找到返回 nil
+(defun wkk:find-font-file (fontname / acad-paths win-fonts dwg-dir paths result)
+  (if (or (null fontname) (= fontname ""))
+    (setq result nil)
+    (progn
+      (setq acad-paths (getenv "ACAD"))
+      (setq win-fonts (strcat (getenv "WINDIR") "\\Fonts\\"))
+      (setq dwg-dir (getvar "DWGPREFIX"))
+      (setq paths '())
+
+      (if acad-paths
+        (foreach p (wkk:split-path acad-paths)
+          (setq paths (append paths (list p)))
+        )
+      )
+
+      (setq paths (append paths (list win-fonts)))
+
+      (if dwg-dir
+        (setq paths (append paths (list dwg-dir)))
+      )
+
+      (setq result nil)
+      (foreach p paths
+        (if (null result)
+          (progn
+            (setq result (findfile (strcat p fontname)))
+            (if (and (null result) (not (wkk:endswith-p fontname ".ttf")))
+              (setq result (findfile (strcat p fontname ".ttf")))
+            )
+            (if (and (null result) (not (wkk:endswith-p fontname ".shx")))
+              (setq result (findfile (strcat p fontname ".shx")))
+            )
+          )
+        )
+      )
+      result
+    )
+  )
+)
+
+;; ============================================================
+;;  数据采集
+;; ============================================================
+
+;; 遍历 TextStyleTable + 所有文字实体 + 所有 DimStyle
+;; 返回 *wkk-styles* 并刷新全局变量
+(defun wkk:collect-data ( / doc textstyles i style name font bigfont ttf
+                          textcount-map dimref-map all-names ss
+                          n ent obj etype style-used dimstyles-list
+                          dimstyle dimname fontpath missing usedby display
+                          style-obj item tc dr)
+  (setq doc (vlax-get-property (vlax-get-acad-object) 'ActiveDocument))
+  (setq textstyles (vlax-get-property doc 'TextStyles))
+
+  (setq *wkk-styles* '())
+  (setq textcount-map '())
+  (setq dimref-map '())
+  (setq all-names '())
+
+  ;; ---- Pass 1: 遍历所有 TextStyle ----
+  (vlax-for style textstyles
+    (setq name (vlax-get-property style 'Name))
+    (setq all-names (append all-names (list name)))
+
+    (setq font (vl-catch-all-apply 'vlax-get-property (list style 'FontFile)))
+    (if (vl-catch-all-error-p font) (setq font ""))
+    (if (null font) (setq font ""))
+
+    (setq bigfont (vl-catch-all-apply 'vlax-get-property (list style 'BigFontFile)))
+    (if (vl-catch-all-error-p bigfont) (setq bigfont ""))
+    (if (null bigfont) (setq bigfont ""))
+
+    (setq ttf (vl-catch-all-apply 'vlax-get-property (list style 'FontName)))
+    (if (vl-catch-all-error-p ttf) (setq ttf ""))
+    (if (null ttf) (setq ttf ""))
+
+    (setq fontpath nil)
+    (setq missing "正常")
+    (cond
+      ((and (/= (if (vl-catch-all-error-p font) "" font) "")
+            (not (vl-catch-all-error-p font)))
+        (setq fontpath (wkk:find-font-file font))
+        (if (null fontpath) (setq missing "缺失!"))
+      )
+      ((and (/= ttf "") (null fontpath))
+        (setq fontpath (wkk:find-font-file ttf))
+        (if (null fontpath) (setq missing "缺失!"))
+      )
+    )
+
+    (setq *wkk-styles*
+      (append *wkk-styles*
+        (list (list name font bigfont ttf fontpath missing "未使用" 0 ""))
+      )
+    )
+
+    (setq textcount-map (append textcount-map (list (cons name 0))))
+    (setq dimref-map (append dimref-map (list (cons name ""))))
+  )
+
+  ;; ---- Pass 2: 遍历文字实体 (ModelSpace) ----
+  (setq ss (vl-catch-all-apply 'vla-get-ModelSpace (list doc)))
+  (if (not (vl-catch-all-error-p ss))
+    (vlax-for obj ss
+      (setq etype (vl-catch-all-apply 'vlax-get-property (list obj 'ObjectName)))
+      (if (and (not (vl-catch-all-error-p etype))
+               etype
+               (member etype '("AcDbText" "AcDbMText" "AcDbAttribute" "AcDbAttributeDefinition")))
+        (progn
+          (setq style-used (vl-catch-all-apply 'vlax-get-property (list obj 'StyleName)))
+          (if (and (not (vl-catch-all-error-p style-used))
+                   style-used (/= style-used ""))
+            (progn
+              (setq textcount-map
+                (if (assoc style-used textcount-map)
+                  (subst (cons style-used (1+ (cdr (assoc style-used textcount-map))))
+                         (assoc style-used textcount-map)
+                         textcount-map)
+                  (append textcount-map (list (cons style-used 1)))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  ;; ---- Pass 2: 遍历文字实体 (PaperSpace) ----
+  (setq ss (vl-catch-all-apply 'vla-get-PaperSpace (list doc)))
+  (if (not (vl-catch-all-error-p ss))
+    (vlax-for obj ss
+      (setq etype (vl-catch-all-apply 'vlax-get-property (list obj 'ObjectName)))
+      (if (and (not (vl-catch-all-error-p etype))
+               etype
+               (member etype '("AcDbText" "AcDbMText" "AcDbAttribute" "AcDbAttributeDefinition")))
+        (progn
+          (setq style-used (vl-catch-all-apply 'vlax-get-property (list obj 'StyleName)))
+          (if (and (not (vl-catch-all-error-p style-used))
+                   style-used (/= style-used ""))
+            (progn
+              (setq textcount-map
+                (if (assoc style-used textcount-map)
+                  (subst (cons style-used (1+ (cdr (assoc style-used textcount-map))))
+                         (assoc style-used textcount-map)
+                         textcount-map)
+                  (append textcount-map (list (cons style-used 1)))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  ;; ---- Pass 3: 遍历 DimStyle ----
+  (setq dimstyles-list (vlax-get-property doc 'DimStyles))
+  (vlax-for dimstyle dimstyles-list
+    (setq style-used
+      (vl-catch-all-apply 'vlax-get-property (list dimstyle 'Dimtxsty))
+    )
+    (if (and (not (vl-catch-all-error-p style-used))
+             style-used (/= style-used ""))
+      (progn
+        (setq dimname (vl-catch-all-apply 'vlax-get-property (list dimstyle 'Name)))
+        (if (vl-catch-all-error-p dimname) (setq dimname ""))
+        (if (null dimname) (setq dimname ""))
+        (setq dimref-map
+          (if (assoc style-used dimref-map)
+            (subst
+              (cons style-used
+                (if (= (cdr (assoc style-used dimref-map)) "")
+                  dimname
+                  (strcat (cdr (assoc style-used dimref-map)) ", " dimname)
+                )
+              )
+              (assoc style-used dimref-map)
+              dimref-map
+            )
+            (append dimref-map (list (cons style-used dimname)))
+          )
+        )
+      )
+    )
+  )
+
+  ;; ---- 合并状态 ----
+  (setq i 0)
+  (while (< i (length *wkk-styles*))
+    (setq item (nth i *wkk-styles*))
+    (setq name (nth 0 item))
+    (setq tc (cdr (assoc name textcount-map)))
+    (setq dr (cdr (assoc name dimref-map)))
+
+    (cond
+      ((> tc 0)
+        (setq usedby "已使用")
+      )
+      ((and (= tc 0) (/= dr ""))
+        (setq usedby "仅标注引用")
+      )
+      (t
+        (setq usedby "未使用")
+      )
+    )
+
+    (setq *wkk-styles*
+      (subst
+        (list name (nth 1 item) (nth 2 item) (nth 3 item)
+              (nth 4 item) (nth 5 item) usedby tc dr)
+        (nth i *wkk-styles*)
+        *wkk-styles*
+      )
+    )
+    (setq i (1+ i))
+  )
+
+  *wkk-styles*
+)
+
+;; ============================================================
+;;  列表显示与详情更新
+;; ============================================================
+
+;; 生成列表显示行
+;; 缺失字体的行加红色标记
+(defun wkk:make-display-line (item / name font missing usedby ttf-name
+                               status-prefix textcount count-str prefix)
+  (setq name (nth 0 item))
+  (setq font (nth 1 item))
+  (setq ttf-name (nth 3 item))
+  (setq missing (nth 5 item))
+  (setq usedby (nth 6 item))
+  (setq textcount (nth 7 item))
+
+  (if (and (or (null font) (= font "")) ttf-name (/= ttf-name ""))
+    (setq font ttf-name)
+  )
+  (if (or (null font) (= font ""))
+    (setq font "(无)")
+  )
+
+  (setq status-prefix
+    (cond
+      ((= usedby "已使用") "O")
+      ((= usedby "仅标注引用") "~")
+      (t ".")
+    )
+  )
+
+  (setq count-str
+    (if (> textcount 0)
+      (strcat " (" (itoa textcount) "处)")
+      ""
+    )
+  )
+
+  (setq prefix
+    (if (= missing "缺失!")
+      "[!] "
+      "    "
+    )
+  )
+
+  (strcat
+    (wkk:pad-right
+      (strcat prefix status-prefix " " name count-str) 25)
+    " | "
+    (wkk:pad-right font 25)
+    " | "
+    missing
+  )
+)
+
+;; 更新详情文本
+(defun wkk:update-detail (index / item name font bigfont ttf fontpath missing
+                           usedby textcount dimstyles msg)
+  (if (null index)
+    (set_tile "detail" "请从上方列表选择一个文字样式")
+    (progn
+      (setq item (nth index *wkk-styles*))
+      (setq name (nth 0 item))
+      (setq font (nth 1 item))
+      (setq bigfont (nth 2 item))
+      (setq ttf (nth 3 item))
+      (setq fontpath (nth 4 item))
+      (setq missing (nth 5 item))
+      (setq usedby (nth 6 item))
+      (setq textcount (nth 7 item))
+      (setq dimstyles (nth 8 item))
+
+      (if (and (or (null font) (= font "")) ttf (/= ttf ""))
+        (setq font (strcat ttf " (TrueType)"))
+      )
+      (if (or (null font) (= font ""))
+        (setq font "(无)")
+      )
+
+      (setq msg (strcat
+        "样式: " name "\n"
+        "状态: " usedby
+        (if (> textcount 0) (strcat " (" (itoa textcount) "处文字)") "")
+        "\n"
+        "关联标注: " (if (/= dimstyles "") dimstyles "(无)") "\n"
+        "字体: " font " " missing "\n"
+        (if (/= bigfont "") (strcat "大字体: " bigfont "\n") "")
+        "路径: " (if fontpath fontpath "(未找到)")
+      ))
+      (set_tile "detail" msg)
+    )
+  )
+)
+
+;; ============================================================
+;;  动态生成 DCL
+;; ============================================================
+
+(defun wkk:write-dcl ( / f)
+  (if (findfile *wkk-dcl-file*)
+    (vl-file-delete *wkk-dcl-file*)
+  )
+  (setq f (open *wkk-dcl-file* "w"))
+
+  (write-line "wkk_dialog : dialog {" f)
+  (write-line "  label = \"文字样式检查 v1.0\";" f)
+  (write-line "  : column {" f)
+  (write-line "    : list_box {" f)
+  (write-line "      key = \"style_list\";" f)
+  (write-line "      height = 18;" f)
+  (write-line "      width = 55;" f)
+  (write-line "      allow_accept = true;" f)
+  (write-line "    }" f)
+  (write-line "    : text {" f)
+  (write-line "      key = \"detail\";" f)
+  (write-line "      label = \"\";" f)
+  (write-line "      height = 6;" f)
+  (write-line "      width = 55;" f)
+  (write-line "      alignment = left;" f)
+  (write-line "    }" f)
+  (write-line "    spacer_1;" f)
+  (write-line "    : text {" f)
+  (write-line "      key = \"status\";" f)
+  (write-line "      label = \"\";" f)
+  (write-line "      alignment = centered;" f)
+  (write-line "    }" f)
+    (write-line "    : text {" f)
+  (write-line "      key = \"font_info\";" f)
+  (write-line "      label = \"当前替换字体: SimSun-ExtB\";" f)
+  (write-line "      alignment = centered;" f)
+  (write-line "    }" f)
+  (write-line "    : row {" f)
+  (write-line "      : button { key = \"replace\"; label = \"替换字体\"; width = 10; }" f)
+  (write-line "      : button { key = \"replaceall\"; label = \"一键替换\"; width = 10; }" f)
+      (write-line "      : button { key = \"selall\"; label = \"一键选中\"; width = 10; }" f)
+      (write-line "      : button { key = \"samples\"; label = \"样张\"; width = 8; }" f)
+      (write-line "      : button { key = \"resetfont\"; label = \"恢复默认\"; width = 8; }" f)
+      (write-line "      : button { key = \"refresh\"; label = \"刷新\"; width = 8; }" f)
+  (write-line "      : button { key = \"exit\"; label = \"退出\"; is_cancel = true; width = 8; }" f)
+  (write-line "    }" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+
+  (close f)
+  (princ)
+)
+
+;; ============================================================
+;;  一键选中指定样式的所有文字对象
+;; ============================================================
+
+(defun wkk:select-all-by-style (style / ss)
+  (setq ss (ssget "_X"
+    (list (cons 7 style))
+  ))
+  (if ss
+    (progn
+      (sssetfirst nil ss)
+      (princ (strcat "\n[WKK] 已选中样式 \"" style "\" 的文字，共 "
+                     (itoa (sslength ss)) " 个"))
+      T
+    )
+    (progn
+      (princ (strcat "\n[WKK] 样式 \"" style "\" 未找到任何文字对象"))
+      nil
+    )
+  )
+)
+
+;; ============================================================
+;;  替换字体
+;; ============================================================
+
+;; index: 在 *wkk-styles* 中的索引
+;; 返回 T 表示替换成功，nil 表示取消或失败
+;; 固定替换为 *wkk-target-font*（如 SimSun-ExtB），通过注册表解析真实文件
+;; 通过 entmod 写入 STYLE 记录组码 3，绕过 COM 字体处理器错误
+
+;; ============================================================
+;; 安全替换文字样式：
+;; 1. 查找使用旧样式的文字
+;; 2. 新建WKK_前缀样式
+;; 3. 将文字对象迁移到新样式
+;; 不直接破坏原STYLE
+;; ============================================================
+
+(defun wkk:get-style-objects (style / ss result i e)
+  (setq result '())
+  (setq ss (ssget "_X"
+    (list
+      '(-4 . "<OR")
+      (cons 7 style)
+      '(-4 . "OR>")
+    )
+  ))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i))
+        (setq result (cons e result))
+        (setq i (1+ i))
+      )
+    )
+  )
+  result
+)
+
+(defun wkk:create-new-style (newname font-file /)
+  (if (tblobjname "STYLE" newname)
+    T
+    (entmake
+      (list
+        '(0 . "STYLE")
+        '(100 . "AcDbSymbolTableRecord")
+        '(100 . "AcDbTextStyleTableRecord")
+        (cons 2 newname)
+        (cons 70 0)
+        (cons 40 0.0)
+        (cons 41 1.0)
+        (cons 50 0.0)
+        (cons 71 0)
+        (cons 42 2.5)
+        (cons 3 font-file)
+        (cons 4 "")
+      )
+    )
+  )
+)
+
+(defun wkk:change-object-style (ent newstyle / ed g7)
+  (setq ed (entget ent))
+  (setq g7 (assoc 7 ed))
+  (if g7
+    (entmod (subst (cons 7 newstyle) g7 ed))
+  )
+)
+
+(defun wkk:replace-style-safe (oldstyle / target font-file objs newstyle count)
+  (setq target *wkk-target-style*)
+
+  ;; 新方案：使用样张样式直接替换
+  (if (and target (/= target ""))
+    (if (null (tblobjname "STYLE" target))
+      (progn
+        (wkk:dbg (strcat "[WKK] 目标样式不存在: " target))
+        nil
+      )
+      (progn
+        (setq objs (wkk:get-style-objects oldstyle))
+        (wkk:dbg (strcat "[WKK] 原样式: " oldstyle))
+        (wkk:dbg (strcat "[WKK] 目标样式: " target))
+        (wkk:dbg (strcat "[WKK] 使用数量: " (itoa (length objs))))
+        (setq count 0)
+        (foreach e objs
+          (wkk:change-object-style e target)
+          (setq count (1+ count))
+        )
+        (wkk:dbg (strcat "[WKK] 迁移完成: " (itoa count)))
+        T
+      )
+    )
+    ;; 老方案：使用默认字体，通过注册表解析
+    (progn
+      (setq target *wkk-target-font*)
+      (setq font-file (wkk:resolve-ttf-file target))
+      (if (null font-file)
+        (progn
+          (wkk:dbg (strcat "[WKK] 无法解析字体: " target))
+          nil
+        )
+        (progn
+          (setq objs (wkk:get-style-objects oldstyle))
+          (setq newstyle (strcat "WKK_" oldstyle))
+          (if (> (strlen newstyle) 255)
+            (setq newstyle (substr newstyle 1 255))
+          )
+          (wkk:dbg (strcat "[WKK] 原样式: " oldstyle))
+          (wkk:dbg (strcat "[WKK] 使用数量: " (itoa (length objs))))
+          (if (wkk:create-new-style newstyle font-file)
+            (progn
+              (setq count 0)
+              (foreach e objs
+                (wkk:change-object-style e newstyle)
+                (setq count (1+ count))
+              )
+              (wkk:dbg (strcat "[WKK] 新样式创建: " newstyle))
+              (wkk:dbg (strcat "[WKK] 迁移完成: " (itoa count)))
+              T
+            )
+            nil
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun wkk:replace-font (index / item name result)
+  (setq item (nth index *wkk-styles*))
+  (setq name (nth 0 item))
+
+  (wkk:dbg (strcat "[WKK] ---- 安全替换开始: " name " ----"))
+
+  (setq result (wkk:replace-style-safe name))
+  (if result
+    (wkk:dbg "[WKK] ---- 安全替换成功 ----")
+    (wkk:dbg "[WKK] ---- 安全替换失败 ----")
+  )
+  result
+)
+
+;; ============================================================
+;;  扫描可用字体列表
+;; ============================================================
+
+;; 返回列表，每项: (显示名 . 完整路径)
+;; SHX 从 ACAD 支持路径查找，TTF 从 Windows 字体目录查找
+(defun wkk:get-available-fonts ( / acad-paths win-fonts paths fonts i files
+                                fname fullpath)
+  (setq acad-paths (getenv "ACAD"))
+  (setq win-fonts (strcat (getenv "WINDIR") "\\Fonts\\"))
+  (setq paths '())
+
+  (if acad-paths
+    (foreach p (wkk:split-path acad-paths)
+      (setq paths (append paths (list p)))
+    )
+  )
+  (setq paths (append paths (list win-fonts)))
+
+  (setq fonts '())
+
+  ;; 扫描每个路径下的 .shx 和 .ttf
+  (foreach p paths
+    (if (vl-file-directory-p p)
+      (progn
+        (setq files (vl-directory-files p "*.shx"))
+        (foreach fname files
+          (setq fullpath (strcat p fname))
+          (if (not (member fullpath (mapcar 'cdr fonts)))
+            (setq fonts (append fonts (list (cons fname fullpath))))
+          )
+        )
+        (setq files (vl-directory-files p "*.ttf"))
+        (foreach fname files
+          (setq fullpath (strcat p fname))
+          (if (not (member fullpath (mapcar 'cdr fonts)))
+            (setq fonts (append fonts (list (cons fname fullpath))))
+          )
+        )
+      )
+    )
+  )
+
+  ;; 按显示名排序
+  (vl-sort fonts
+    (function (lambda (a b) (< (strcase (car a)) (strcase (car b)))))
+  )
+)
+
+;; ============================================================
+;;  字体选择对话框 DCL
+;; ============================================================
+
+(defun wkk:write-font-dcl ( / f)
+  (if (findfile *wkk-dcl-file*)
+    (vl-file-delete *wkk-dcl-file*)
+  )
+  (setq f (open *wkk-dcl-file* "w"))
+
+  (write-line "wkk_font : dialog {" f)
+  (write-line "  label = \"选择替换字体\";" f)
+  (write-line "  : column {" f)
+  (write-line "    : list_box {" f)
+  (write-line "      key = \"font_list\";" f)
+  (write-line "      height = 20;" f)
+  (write-line "      width = 50;" f)
+  (write-line "      allow_accept = true;" f)
+  (write-line "    }" f)
+  (write-line "    spacer_1;" f)
+  (write-line "    : row {" f)
+  (write-line "      : button { key = \"ok\"; label = \"确定\"; is_default = true; width = 12; }" f)
+  (write-line "      : button { key = \"cancel\"; label = \"取消\"; is_cancel = true; width = 12; }" f)
+  (write-line "    }" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+
+  (close f)
+  (princ)
+)
+
+;; ============================================================
+;;  字体文件分类（英文字体 / 中文字体 / 系统字体）
+;;  用于样张对话框的字体列表筛选
+;;  分类依据（三维度综合判断）:
+;;   1. 文件后缀: .shx = 矢量字体, .ttf = 系统字体
+;;   2. 命名习惯: 大字体文件名通常含 hz/gb/china/big/cjk 等
+;;   3. 技术原理: SHX 大字体支持双字节字符集（中文/日文/韩文）
+;; ============================================================
+
+;; 判断 SHX 文件是否为大字体（中文字体）
+;; font-entry: (fontname . filepath)
+(defun wkk:fontfile-is-bigfont-p (font-entry / fname upper)
+  (setq fname (car font-entry))
+  (setq upper (strcase fname))
+  (or (vl-string-search "HZ" upper)
+      (vl-string-search "GB" upper)
+      (vl-string-search "CHINA" upper)
+      (vl-string-search "BIG" upper)
+      (vl-string-search "CJK" upper)
+      (vl-string-search "ASIA" upper)
+      (vl-string-search "UNICODE" upper)
+      (vl-string-search "UCS" upper)
+      (vl-string-search "CJKTXT" upper))
+)
+
+;; 判断是否为英文字体（SHX 非大字体）
+(defun wkk:fontfile-is-english (font-entry / fname upper)
+  (setq fname (car font-entry))
+  (setq upper (strcase fname))
+  (and (wkk:endswith-p upper ".SHX")
+       (not (wkk:fontfile-is-bigfont-p font-entry)))
+)
+
+;; 判断是否为中文字体（SHX 大字体）
+(defun wkk:fontfile-is-chinese (font-entry / fname upper)
+  (setq fname (car font-entry))
+  (setq upper (strcase fname))
+  (and (wkk:endswith-p upper ".SHX")
+       (wkk:fontfile-is-bigfont-p font-entry))
+)
+
+;; 判断是否为系统字体（TrueType / OpenType）
+(defun wkk:fontfile-is-system (font-entry / fname upper)
+  (setq fname (car font-entry))
+  (setq upper (strcase fname))
+  (wkk:endswith-p upper ".TTF")
+)
+
+
+;; ============================================================
+;;  样张选择对话框 DCL
+;; ============================================================
+
+(defun wkk:write-samples-dcl ( / f)
+  (if (findfile *wkk-dcl-file*)
+    (vl-file-delete *wkk-dcl-file*)
+  )
+  (setq f (open *wkk-dcl-file* "w"))
+  (write-line "wkk_samples : dialog {" f)
+  (write-line "  label = \"Select Fonts for Samples\";" f)
+  (write-line "  : column {" f)
+  (write-line "    : edit_box {" f)
+  (write-line "      key = \"search\";" f)
+  (write-line "      label = \"Search (Enter to filter):\";" f)
+  (write-line "      edit_width = 40;" f)
+  (write-line "      edit_limit = 100;" f)
+  (write-line "    }" f)
+  (write-line "    : row {" f)
+  (write-line "      : toggle { key = \"filter_en\"; label = \"英文字体\"; }" f)
+  (write-line "      : toggle { key = \"filter_cn\"; label = \"中文字体\"; }" f)
+  (write-line "      : toggle { key = \"filter_sys\"; label = \"系统字体\"; }" f)
+  (write-line "    }" f)
+  (write-line "    : list_box {" f)
+  (write-line "      key = \"font_list\";" f)
+  (write-line "      height = 20;" f)
+  (write-line "      width = 55;" f)
+  (write-line "      multiple_select = true;" f)
+  (write-line "      allow_accept = true;" f)
+  (write-line "    }" f)
+  (write-line "    : text {" f)
+  (write-line "      key = \"hint\";" f)
+  (write-line "      label = \"Ctrl+Click to select/deselect\";" f)
+  (write-line "      alignment = centered;" f)
+  (write-line "    }" f)
+  (write-line "    spacer_1;" f)
+  (write-line "    : row {" f)
+  (write-line "      : button { key = \"filter\"; label = \"Filter\"; width = 10; }" f)
+  (write-line "      : button { key = \"setreplace\"; label = \"设为替换\"; width = 10; is_enabled = false; }" f)
+  (write-line "      : button { key = \"ok\"; label = \"OK\"; is_default = true; width = 10; }" f)
+  (write-line "      : button { key = \"cancel\"; label = \"Cancel\"; is_cancel = true; width = 10; }" f)
+  (write-line "    }" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+  (close f)
+  (princ)
+)
+
+;; 更新"设为替换"按钮状态：选中恰好1个字体时启用（不要求样式已存在）
+(defun wkk:update-setreplace-btn ( / sel-str sel-list)
+  (setq sel-str (get_tile "font_list"))
+  (if (or (null sel-str) (= sel-str ""))
+    (mode_tile "setreplace" 1)
+    (progn
+      (setq sel-list (read (strcat "(" sel-str ")")))
+      (if (= (length sel-list) 1)
+        (mode_tile "setreplace" 0)
+        (mode_tile "setreplace" 1)
+      )
+    )
+  )
+)
+
+;; 根据复选框和搜索文本刷新样张字体列表（对话框内就地刷新）
+;; 依赖动态变量: font-list-full, font-list-filtered (wkk:create-font-samples 局部变量)
+(defun wkk:refresh-samples-list ( / show-en show-cn show-sys search-text filtered)
+  (setq show-en (= (get_tile "filter_en") "1"))
+  (setq show-cn (= (get_tile "filter_cn") "1"))
+  (setq show-sys (= (get_tile "filter_sys") "1"))
+  (setq search-text (get_tile "search"))
+
+  (setq filtered
+    (vl-remove-if-not
+      '(lambda (f)
+         (and
+           (or (and show-en (wkk:fontfile-is-english f))
+               (and show-cn (wkk:fontfile-is-chinese f))
+               (and show-sys (wkk:fontfile-is-system f)))
+           (or (= search-text "")
+               (vl-string-search (strcase search-text) (strcase (car f))))
+         )
+       )
+      font-list-full
+    )
+  )
+
+  (setq font-list-filtered filtered)
+
+  (start_list "font_list")
+  (foreach f filtered
+    (add_list (car f))
+  )
+  (end_list)
+
+  ;; 重置"设为替换"按钮状态
+  (mode_tile "setreplace" 1)
+)
+
+;; ============================================================
+;;  创建字体样张
+;; ============================================================
+
+(defun wkk:create-font-samples ( / font-list-full font-list-filtered
+                                 dcl_id code sel-str sel-list i
+                                 fname fpath stylename ins-pt cur-x cur-y
+                                 cols col-w col-h text-hgt col-idx count)
+  (setq font-list-full (wkk:get-available-fonts))
+  (if (< (length font-list-full) 1)
+    (princ "\n[WKK] No fonts available")
+    (progn
+      (if (not wkk:samples-filter)
+        (setq wkk:samples-filter "")
+      )
+
+      ;; 每次启动默认全选
+      (setq wkk:samples-filter-en T)
+      (setq wkk:samples-filter-cn T)
+      (setq wkk:samples-filter-sys T)
+
+      (setq code 2)
+      (while (= code 2)
+        (setq font-list-filtered
+          (vl-remove-if-not
+            '(lambda (f)
+               (and
+                 (or (and wkk:samples-filter-en (wkk:fontfile-is-english f))
+                     (and wkk:samples-filter-cn (wkk:fontfile-is-chinese f))
+                     (and wkk:samples-filter-sys (wkk:fontfile-is-system f)))
+                 (or (= wkk:samples-filter "")
+                     (vl-string-search (strcase wkk:samples-filter) (strcase (car f))))
+               )
+             )
+            font-list-full
+          )
+        )
+
+        (if (< (length font-list-filtered) 1)
+          (progn
+            (princ (strcat "\n[WKK] No fonts match \"" wkk:samples-filter "\" - showing all"))
+            (setq wkk:samples-filter "")
+            (setq font-list-filtered font-list-full)
+          )
+        )
+
+        (wkk:write-samples-dcl)
+        (setq dcl_id (load_dialog *wkk-dcl-file*))
+
+        (if (not (new_dialog "wkk_samples" dcl_id))
+          (progn
+            (princ "\n[WKK] Failed to create samples dialog")
+            (unload_dialog dcl_id)
+            (setq code 0)
+          )
+          (progn
+            (set_tile "search" wkk:samples-filter)
+            (set_tile "filter_en" (if wkk:samples-filter-en "1" "0"))
+            (set_tile "filter_cn" (if wkk:samples-filter-cn "1" "0"))
+            (set_tile "filter_sys" (if wkk:samples-filter-sys "1" "0"))
+
+            (start_list "font_list")
+            (foreach f font-list-filtered
+              (add_list (car f))
+            )
+            (end_list)
+
+            (action_tile "search"
+              "(setq wkk:samples-filter (get_tile \"search\"))
+               (setq wkk:samples-filter-en (= (get_tile \"filter_en\") \"1\"))
+               (setq wkk:samples-filter-cn (= (get_tile \"filter_cn\") \"1\"))
+               (setq wkk:samples-filter-sys (= (get_tile \"filter_sys\") \"1\"))
+               (done_dialog 2)"
+            )
+            (action_tile "filter"
+              "(setq wkk:samples-filter (get_tile \"search\"))
+               (setq wkk:samples-filter-en (= (get_tile \"filter_en\") \"1\"))
+               (setq wkk:samples-filter-cn (= (get_tile \"filter_cn\") \"1\"))
+               (setq wkk:samples-filter-sys (= (get_tile \"filter_sys\") \"1\"))
+               (done_dialog 2)"
+            )
+            (action_tile "filter_en"
+              "(setq wkk:samples-filter-en (= (get_tile \"filter_en\") \"1\")) (wkk:refresh-samples-list)"
+            )
+            (action_tile "filter_cn"
+              "(setq wkk:samples-filter-cn (= (get_tile \"filter_cn\") \"1\")) (wkk:refresh-samples-list)"
+            )
+            (action_tile "filter_sys"
+              "(setq wkk:samples-filter-sys (= (get_tile \"filter_sys\") \"1\")) (wkk:refresh-samples-list)"
+            )
+            (action_tile "font_list" "(wkk:update-setreplace-btn)")
+            (action_tile "setreplace"
+              "(setq wkk:samples-sel (get_tile \"font_list\"))
+               (done_dialog 3)"
+            )
+            (action_tile "ok"
+              "(setq wkk:samples-sel (get_tile \"font_list\")) (done_dialog 1)"
+            )
+            (action_tile "cancel" "(done_dialog 0)")
+
+            (setq code (start_dialog))
+            (unload_dialog dcl_id)
+          )
+        )
+      )
+
+      (cond
+        ((= code 1)
+          (setq sel-str wkk:samples-sel)
+          (if (and sel-str (/= sel-str ""))
+            (progn
+              (initget 1)
+              (setq ins-pt (getpoint "\n[WKK] Pick insertion point for font samples: "))
+
+              (setq cols 4)
+              (setq col-w 210.0)
+              (setq col-h 25.0)
+              (setq text-hgt 7.0)
+              (setq cur-x (car ins-pt))
+              (setq cur-y (cadr ins-pt))
+              (setq col-idx 0)
+              (setq count 0)
+
+              (setq sel-list (read (strcat "(" sel-str ")")))
+              (foreach idx sel-list
+                (setq fname (car (nth idx font-list-filtered)))
+                (setq fpath (cdr (nth idx font-list-filtered)))
+
+                (setq stylename (strcat "WKK_" (vl-string-subst "_" "." fname)))
+                (if (> (strlen stylename) 255)
+                  (setq stylename (substr stylename 1 255))
+                )
+
+                (if (null (tblobjname "STYLE" stylename))
+                  (entmake
+                    (list
+                      '(0 . "STYLE")
+                      '(100 . "AcDbSymbolTableRecord")
+                      '(100 . "AcDbTextStyleTableRecord")
+                      (cons 2 stylename)
+                      '(70 . 0)
+                      '(40 . 0.0)
+                      '(41 . 1.0)
+                      '(50 . 0.0)
+                      '(71 . 0)
+                      (cons 42 text-hgt)
+                      (cons 3 (if (wkk:endswith-p (strcase fname) ".SHX")
+                                fname
+                                fpath))
+                      '(4 . "")
+                    )
+                  )
+                )
+
+                (entmake
+                  (list
+                    '(0 . "TEXT")
+                    (cons 1 (strcat fname " : 中文内容"))
+                    (cons 7 stylename)
+                    (list 10 cur-x cur-y 0.0)
+                    (cons 40 text-hgt)
+                    '(72 . 0)
+                    '(73 . 0)
+                  )
+                )
+
+                (setq count (1+ count))
+                (setq col-idx (1+ col-idx))
+                (if (>= col-idx cols)
+                  (setq col-idx 0
+                        cur-x (car ins-pt)
+                        cur-y (- cur-y col-h)
+                  )
+                  (setq cur-x (+ cur-x col-w))
+                )
+              )
+
+              (princ (strcat "\n[WKK] Created " (itoa count) " text samples"))
+              (command "_.ZOOM" "_E")
+            )
+            (princ "\n[WKK] No fonts selected")
+          )
+        )
+        ((= code 3)
+          (setq sel-str wkk:samples-sel)
+          (if (and sel-str (/= sel-str ""))
+            (progn
+              (setq sel-list (read (strcat "(" sel-str ")")))
+              (if (= (length sel-list) 1)
+                (progn
+                  (setq i (car sel-list))
+                  (setq fname (car (nth i font-list-filtered)))
+                  (setq fpath (cdr (nth i font-list-filtered)))
+                  (setq stylename (strcat "WKK_" (vl-string-subst "_" "." fname)))
+                  ;; 样式不存在时先创建（无需样张实体）
+                  (if (null (tblobjname "STYLE" stylename))
+                    (progn
+                      (entmake
+                        (list
+                          '(0 . "STYLE")
+                          '(100 . "AcDbSymbolTableRecord")
+                          '(100 . "AcDbTextStyleTableRecord")
+                          (cons 2 stylename)
+                          '(70 . 0)
+                          '(40 . 0.0)
+                          '(41 . 1.0)
+                          '(50 . 0.0)
+                          '(71 . 0)
+                          '(42 . 2.5)
+                          (cons 3 (if (wkk:endswith-p (strcase fname) ".SHX")
+                                    fname
+                                    fpath))
+                          '(4 . "")
+                        )
+                      )
+                      (princ (strcat "\n[WKK] 已创建样式: " stylename))
+                    )
+                  )
+                  (setq *wkk-target-font* fname)
+                  (setq *wkk-target-style* stylename)
+                  (princ (strcat "\n[WKK] 已设为替换字体: " fname " -> 样式: " stylename))
+                )
+                (princ "\n[WKK] 请选择恰好一个字体")
+              )
+            )
+            (princ "\n[WKK] 未选择字体")
+          )
+        )
+        (t
+          (princ "\n[WKK] Samples cancelled")
+        )
+      )
+    )
+  )
+)
+
+;; ============================================================
+;;  弹出字体选择对话框
+;; ============================================================
+
+;; 返回选中字体的完整路径，取消返回 nil
+(defun wkk:pick-font ( / font-list dcl_id code result i)
+  (setq font-list (wkk:get-available-fonts))
+  (if (= (length font-list) 0)
+    (progn
+      (princ "\n[WKK] 未找到任何可用字体")
+      nil
+    )
+    (progn
+      (wkk:write-font-dcl)
+      (setq dcl_id (load_dialog *wkk-dcl-file*))
+      (if (not (new_dialog "wkk_font" dcl_id))
+        (progn
+          (princ "\n[WKK] 字体对话框加载失败")
+          (unload_dialog dcl_id)
+          nil
+        )
+        (progn
+          (start_list "font_list")
+          (foreach f font-list
+            (add_list (car f))
+          )
+          (end_list)
+
+          (set_tile "font_list" "0")
+          (action_tile "ok"
+            "(setq wkk:fsel (get_tile \"font_list\"))
+             (if (/= wkk:fsel \"\")
+               (done_dialog 1)
+               (princ \"\\n[WKK] 请先选择一个字体\")
+             )"
+          )
+          (action_tile "cancel" "(done_dialog 0)")
+
+          (mode_tile "font_list" 2)
+          (setq code (start_dialog))
+          (unload_dialog dcl_id)
+
+          (if (= code 0)
+            (progn
+              (princ "\n[WKK] 取消选择字体")
+              nil
+            )
+            (progn
+              (setq result (get_tile "font_list"))
+              (if (or (null result) (= result ""))
+                (progn
+                  (princ "\n[WKK] 未选择字体，已取消")
+                  nil
+                )
+                (progn
+                  (setq i (atoi result))
+                  (cdr (nth i font-list))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ============================================================
+;;  一键替换所有有文字使用的样式
+;; ============================================================
+
+;; 遍历所有 TEXTCOUNT>0 的样式，逐个调用安全替换（新建 WKK_ 前缀样式 + 迁移文字对象）
+(defun wkk:replace-all-missing ( / i item name textcount count ok
+                                replaced-list total)
+  (setq replaced-list '())
+  (setq i 0)
+  (while (< i (length *wkk-styles*))
+    (setq item (nth i *wkk-styles*))
+    (setq textcount (nth 7 item))
+    (if (> textcount 0)
+      (setq replaced-list (append replaced-list (list (nth 0 item))))
+    )
+    (setq i (1+ i))
+  )
+  (setq total (length replaced-list))
+
+  (if (= total 0)
+    (progn
+      (wkk:dbg "[WKK] 没有需要替换的文字样式（所有样式均未被文字对象使用）")
+      nil
+    )
+    (progn
+      (wkk:dbg (strcat "[WKK] ==== 一键替换开始，共 " (itoa total) " 个有文字使用的样式 ===="))
+      (setq count 0)
+      (foreach name replaced-list
+        (wkk:dbg (strcat "  -- 样式: " name))
+        (setq ok (wkk:replace-style-safe name))
+        (if ok (setq count (1+ count)))
+      )
+      (wkk:dbg (strcat "[WKK] ==== 一键替换完成: 成功 "
+                       (itoa count) "/" (itoa total) " ===="))
+      (> count 0)
+    )
+  )
+)
+
+;; ============================================================
+;;  主命令
+;; ============================================================
+
+(defun c:WKK ( / dcl_id code old-cmdecho sel-index wkk_replace_idx
+               missing-count total-count pre-ss pre-ent pre-type pre-style)
+  (setq old-cmdecho (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+
+  ;; ---- 预选模式：已有单个文字实体被选中 → 一键选中同样式 ----
+  (setq pre-ss (cadr (ssgetfirst)))
+  (if (and pre-ss
+           (= (sslength pre-ss) 1)
+           (setq pre-ent (ssname pre-ss 0))
+           (setq pre-type (cdr (assoc 0 (entget pre-ent))))
+           (member pre-type '("TEXT" "MTEXT" "ATTDEF" "ATTRIB"))
+           (setq pre-style (cdr (assoc 7 (entget pre-ent))))
+           (/= pre-style ""))
+    (wkk:select-all-by-style pre-style)
+    ;; ---- 正常模式：弹出界面 ----
+    (progn
+      (wkk:collect-data)
+
+      (setq code 999)
+      (while (/= code 0)
+        (wkk:write-dcl)
+        (setq dcl_id (load_dialog *wkk-dcl-file*))
+
+        (if (not (new_dialog "wkk_dialog" dcl_id))
+          (progn
+            (princ "\n[WKK] 对话框加载失败")
+            (unload_dialog dcl_id)
+            (setq code 0)
+          )
+          (progn
+            (start_list "style_list")
+            (foreach item *wkk-styles*
+              (add_list (wkk:make-display-line item))
+            )
+            (end_list)
+
+            (wkk:update-detail nil)
+
+            ;; 计算缺失数量并更新状态栏
+            (setq total-count (length *wkk-styles*))
+            (setq missing-count 0)
+            (foreach item *wkk-styles*
+              (if (= (nth 5 item) "缺失!")
+                (setq missing-count (1+ missing-count))
+              )
+            )
+            (set_tile "status"
+              (strcat "共 " (itoa total-count) " 个样式，"
+                      (if (> missing-count 0)
+                        (strcat (itoa missing-count) " 个字体缺失 [!]")
+                        "所有字体均正常"
+                      )
+              )
+            )
+
+            (set_tile "font_info"
+              (if *wkk-target-style*
+                (strcat "当前替换样式: " *wkk-target-style*)
+                (strcat "当前替换字体: " *wkk-target-font* " (未选择样张)")
+              )
+            )
+
+            (action_tile "style_list"
+              "(setq wkk:sel (get_tile \"style_list\"))
+               (if (/= wkk:sel \"\")
+                 (wkk:update-detail (atoi wkk:sel))
+               )"
+            )
+
+            (action_tile "replace"
+              "(setq wkk:sel (get_tile \"style_list\"))
+               (if (/= wkk:sel \"\")
+                 (progn
+                   (setq wkk_replace_idx (atoi wkk:sel))
+                   (done_dialog 1)
+                 )
+                 (princ \"\\n[WKK] 请先选择一个样式\")
+               )"
+            )
+
+            (action_tile "replaceall" "(done_dialog 3)")
+            (action_tile "selall"
+              "(setq wkk:sel (get_tile \"style_list\"))
+               (if (/= wkk:sel \"\")
+                 (progn
+                   (setq wkk_replace_idx (atoi wkk:sel))
+                   (done_dialog 4)
+                 )
+                 (princ \"\\n[WKK] 请先选择一个样式\")
+               )"
+            )
+            (action_tile "samples" "(done_dialog 5)")
+            (action_tile "resetfont"
+              "(setq *wkk-target-font* \"SimSun-ExtB\")
+               (setq *wkk-target-style* nil)
+               (set_tile \"font_info\" \"当前替换字体: SimSun-ExtB (未选择样张)\")
+               (princ \"\\n[WKK] 已恢复默认替换字体: SimSun-ExtB\")"
+            )
+            (action_tile "refresh" "(done_dialog 2)")
+            (action_tile "exit" "(done_dialog 0)")
+
+            (mode_tile "style_list" 2)
+            (setq code (start_dialog))
+            (unload_dialog dcl_id)
+
+            (cond
+              ((= code 1)
+                (if (wkk:replace-font wkk_replace_idx)
+                  (setq code 0)
+                )
+                (wkk:collect-data)
+              )
+              ((= code 2)
+                (wkk:collect-data)
+              )
+              ((= code 3)
+                (if (wkk:replace-all-missing)
+                  (setq code 0)
+                )
+                (wkk:collect-data)
+              )
+              ((= code 4)
+                (wkk:select-all-by-style
+                  (nth 0 (nth wkk_replace_idx *wkk-styles*))
+                )
+                (setq code 0)
+              )
+              ((= code 5)
+                (wkk:create-font-samples)
+                (wkk:collect-data)
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  (setvar "CMDECHO" old-cmdecho)
+  (princ)
+)
+
+;; ============================================================
+;;  WKT - 从文字实体获取替换样式（含自动清理）
+;;  1. 拾取文字实体 → 读取样式名 → 设为替换目标
+;;  2. 删除所有 WKK_ 样张文字实体（跳过选中实体）
+;;  3. 删除所有 WKK_ 样式（保留选中实体的样式）
+;;  4. 删除选中实体 → 仅保留其样式
+;; ============================================================
+
+(defun wkk:is-wkk-text (obj exclude-handle / oname style h)
+  (setq oname (vl-catch-all-apply 'vla-get-ObjectName (list obj)))
+  (if (vl-catch-all-error-p oname) (setq oname ""))
+  (if (member oname '("AcDbText" "AcDbMText" "AcDbAttribute" "AcDbAttributeDefinition"))
+    (progn
+      (setq style (vl-catch-all-apply 'vla-get-StyleName (list obj)))
+      (if (vl-catch-all-error-p style) (setq style ""))
+      (if (and (>= (strlen style) 4)
+               (= (strcase (substr style 1 4)) "WKK_"))
+        (progn
+          (setq h (vl-catch-all-apply 'vla-get-Handle (list obj)))
+          (if (vl-catch-all-error-p h) (setq h ""))
+          (/= (strcase h) (strcase exclude-handle)))
+        nil))
+    nil))
+
+(defun c:WKT ( / ent ent-name ed style-name sel-handle doc
+                count-text count-style ps style-entry sname style-obj)
+  (princ "\n[WKT] 请点击一个样张文字实体，将其样式设为替换样式")
+  (setq ent (entsel "\n选择文字实体: "))
+  (if (null ent)
+    (princ "\n[WKT] 已取消")
+    (progn
+      (setq ent-name (car ent))
+      (setq ed (entget ent-name))
+      (cond
+        ((not (member (cdr (assoc 0 ed)) '("TEXT" "MTEXT" "ATTDEF" "ATTRIB")))
+          (princ "\n[WKT] 请选择文字实体"))
+        (t
+          (setq style-name (cdr (assoc 7 ed)))
+          (if (or (null style-name) (= style-name ""))
+            (princ "\n[WKT] 该实体无有效样式")
+            (progn
+              (setq *wkk-target-style* style-name)
+              (setq sel-handle (cdr (assoc 5 ed)))
+              (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+              (setvar "CMDECHO" 0)
+              (setq count-text 0)
+              (setq count-style 0)
+
+              ;; Step 1: 删除所有 WKK_ 样张文字实体（跳过选中实体）
+              (vlax-for obj (vla-get-ModelSpace doc)
+                (if (wkk:is-wkk-text obj sel-handle)
+                  (progn
+                    (vl-catch-all-apply 'vla-delete (list obj))
+                    (setq count-text (1+ count-text)))))
+              (setq ps (vl-catch-all-apply 'vla-get-PaperSpace (list doc)))
+              (if (not (vl-catch-all-error-p ps))
+                (vlax-for obj ps
+                  (if (wkk:is-wkk-text obj sel-handle)
+                    (progn
+                      (vl-catch-all-apply 'vla-delete (list obj))
+                      (setq count-text (1+ count-text))))))
+
+              ;; Step 2: 删除所有 WKK_ 样式（保留选中实体的样式）
+              (setq style-entry (tblnext "STYLE" T))
+              (while style-entry
+                (setq sname (cdr (assoc 2 style-entry)))
+                (if (and (>= (strlen sname) 4)
+                         (= (strcase (substr sname 1 4)) "WKK_")
+                         (/= (strcase sname) (strcase style-name)))
+                  (progn
+                    (setq style-obj
+                      (vl-catch-all-apply 'vla-item
+                        (list (vla-get-TextStyles doc) sname)))
+                    (if (not (vl-catch-all-error-p style-obj))
+                      (progn
+                        (vl-catch-all-apply 'vla-delete (list style-obj))
+                        (setq count-style (1+ count-style))))))
+                (setq style-entry (tblnext "STYLE")))
+
+              ;; Step 3: 删除选中实体
+              (entdel ent-name)
+
+              (setvar "CMDECHO" 1)
+              (princ (strcat "\n[WKT] 替换样式已设为: " style-name))
+              (princ (strcat "\n[WKT] 已清理 " (itoa count-text) " 个样张实体、"
+                             (itoa count-style) " 个样式"))
+              (princ "\n[WKT] 输入 WKK 即可使用「替换字体」或「一键替换」。")
+            )))))
+    )
+  (princ)
+)
+
+(princ "\n[WKK] 已加载。输入 WKK 启动文字样式检查，输入 WKT 从文字实体获取替换样式。")
+(princ)
