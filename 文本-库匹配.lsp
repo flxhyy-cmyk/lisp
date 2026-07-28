@@ -10,6 +10,12 @@
 (setq *wwe-transformer-data* nil)
 (setq *wwe-selected-transformer* nil)
 (setq *wwe-lsp-path* nil)
+(if (not (boundp '*wwe-last-text-data*))
+  (setq *wwe-last-text-data* nil))
+(if (not (boundp '*wwe-last-text-height*))
+  (setq *wwe-last-text-height* 2.5))
+(if (not (boundp '*wwe-last-entity-groups*))
+  (setq *wwe-last-entity-groups* nil))
 
 ;; Store the LSP file path when loaded
 (if (and (getvar "LASTPROMPT") (not *wwe-lsp-path*))
@@ -377,6 +383,54 @@
   dcl-file
 )
 
+;; Save last text data to temp file (cross-document persistence)
+(defun wwe:save-last-data-to-file (/ f data-file)
+  (setq data-file (strcat (getenv "TEMP") "\\wwe_last_data.txt"))
+  (setq f (open data-file "w"))
+  (if f
+    (progn
+      (write-line (rtos *wwe-last-text-height* 2 4) f)
+      (foreach item *wwe-last-text-data*
+        (write-line (caddr item) f))
+      (close f)
+    )
+  )
+)
+
+;; Load last text data from temp file (cross-document persistence)
+(defun wwe:load-last-data-from-file (/ f line text-list height data-list i gid data-file)
+  (setq data-file (strcat (getenv "TEMP") "\\wwe_last_data.txt"))
+  (setq f (open data-file "r"))
+  (if f
+    (progn
+      (setq height (atof (read-line f)))
+      (setq text-list '())
+      (while (setq line (read-line f))
+        (setq text-list (append text-list (list line)))
+      )
+      (close f)
+      (if (and text-list (> (length text-list) 0))
+        (progn
+          (setq data-list '())
+          (setq *wwe-last-entity-groups* '())
+          (setq i 0)
+          (while (< i (length text-list))
+            (setq data-list (append data-list
+              (list (list nil 0 (nth i text-list) i))))
+            (setq *wwe-last-entity-groups* (append *wwe-last-entity-groups* (list i)))
+            (setq i (1+ i))
+          )
+          (setq *wwe-last-text-data* data-list)
+          (setq *wwe-last-text-height* height)
+          T
+        )
+        nil
+      )
+    )
+    nil
+  )
+)
+
 ;; Ö÷ÃüÁîº¯Êý
 (defun c:WWD ()
   (setq text-data nil)
@@ -388,6 +442,23 @@
   ;; Select text objects (returns list of (entity y-coord text))
   (setq text-data (wwe:pick-text))
   
+  ;; If no new text picked, always load from file for latest cross-document data
+  (if (not text-data)
+    (progn
+      (wwe:load-last-data-from-file)
+      (if *wwe-last-text-data*
+        (progn
+          (setq text-data *wwe-last-text-data*)
+          (setq *wwe-text-height* *wwe-last-text-height*)
+          (setq *wwe-entity-groups* (append '() *wwe-last-entity-groups*))
+          (princ "\nNo new text selected, showing last selected text...")
+        )
+        (princ "\nNo text object selected, operation cancelled")
+      )
+    )
+  )
+  
+  ;; Show dialog if we have text data (either new or recalled)
   (if text-data
     (progn
       ;; Show dialog and get final result
@@ -410,7 +481,6 @@
         (princ "\nOperation cancelled")
       )
     )
-    (princ "\nNo text object selected, operation cancelled")
   )
   
   (princ)
@@ -488,16 +558,14 @@
       ;; Clear selection set to remove highlight
       (command "_.SELECT" "_P" "")
       
-      ;; Sort by Y coordinate (descending - from top to bottom)
+      ;; Keep pick order (display in selection order, not sorted by Y)
       (if result-list
         (progn
-          (setq sorted-list (vl-sort result-list '(lambda (a b) (> (cadr a) (cadr b)))))
-          ;; Update entity groups to match sorted order
           (setq *wwe-entity-groups* '())
-          (foreach item sorted-list
+          (foreach item result-list
             (setq *wwe-entity-groups* (append *wwe-entity-groups* (list (cadddr item))))
           )
-          sorted-list
+          result-list
         )
         nil
       )
@@ -958,6 +1026,16 @@
 (defun wwe:show-dialog (text-data / dcl-file dcl-id dialog-result new-data row-count i result-list line-val text-list pasted-lines new-text-list j checkbox-states swapped-data capacity-list csv-file-obj)
   ;; Store text data in global variable
   (setq *wwe-text-list* text-data)
+  
+  ;; Save text data for recall (strip entity references to avoid stale handles)
+  (setq *wwe-last-text-data* '())
+  (foreach item text-data
+    (setq *wwe-last-text-data* (append *wwe-last-text-data*
+      (list (list nil (cadr item) (caddr item) (cadddr item)))))
+  )
+  (setq *wwe-last-text-height* *wwe-text-height*)
+  (setq *wwe-last-entity-groups* (append '() *wwe-entity-groups*))
+  (wwe:save-last-data-to-file)
   
   ;; Initialize numbers-added flag if not set
   (if (not *wwe-numbers-added*)
