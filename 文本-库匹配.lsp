@@ -317,7 +317,7 @@
   (write-line "    }" f)
   (write-line "  }" f)
   
-  ;; Buttons - all in one row
+  ;; Row 1: text editing & data operations
   (write-line "  : row {" f)
   (write-line "    fixed_width = true;" f)
   (write-line "    alignment = centered;" f)
@@ -351,6 +351,12 @@
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
+  (write-line "  }" f)
+
+  ;; Row 2: output & dialog control
+  (write-line "  : row {" f)
+  (write-line "    fixed_width = true;" f)
+  (write-line "    alignment = centered;" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_write\";" f)
   (write-line "      label = \"写入CAD\";" f)
@@ -363,6 +369,14 @@
   (write-line "      width = 8;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
+  ;; Text height edit box: auto-shows recorded height, remembers last change
+  (write-line "    : edit_box {" f)
+  (write-line "      key = \"eb_height\";" f)
+  (write-line "      label = \"字高:\";" f)
+  (write-line "      width = 12;" f)
+  (write-line "      edit_width = 6;" f)
+  (write-line "      fixed_width = true;" f)
+  (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_ok\";" f)
   (write-line "      label = \"确定\";" f)
@@ -370,6 +384,7 @@
   (write-line "      fixed_width = true;" f)
   (write-line "      is_default = true;" f)
   (write-line "    }" f)
+  ;; Visible cancel button: also handles ESC / close-X cancel
   (write-line "    : button {" f)
   (write-line "      key = \"btn_cancel\";" f)
   (write-line "      label = \"取消\";" f)
@@ -1100,6 +1115,9 @@
             (setq i (1+ i))
           )
           
+          ;; Show current recorded text height in the height box (real-time display)
+          (set_tile "eb_height" (rtos *wwe-text-height* 2 2))
+          
           ;; Update info label if transformer is selected
           (if *wwe-selected-transformer*
             (set_tile "info_label" 
@@ -1187,9 +1205,27 @@
             "(progn (setq result-list '()) (setq i 0) (while (< i row-count) (setq result-list (append result-list (list (get_tile (strcat \"line_\" (itoa i)))))) (setq i (1+ i))) (done_dialog 6))"
           )
           
+          ;; Text height box action - real-time update and remember last value
+          (action_tile "eb_height"
+            (strcat
+              "(progn "
+              "  (setq tmp-h (distof $value 2)) "
+              "  (if (and tmp-h (> tmp-h 0)) "
+              "    (progn "
+              "      (setq *wwe-text-height* tmp-h) "
+              "      (setq *wwe-last-text-height* tmp-h) "
+              "      (wwe:save-last-data-to-file) "
+              "    ) "
+              ;; Invalid input: restore current recorded height
+              "    (set_tile \"eb_height\" (rtos *wwe-text-height* 2 2)) "
+              "  ) "
+              ")"
+            )
+          )
+          
           ;; Write to CAD button action - Create new MTEXT
           (action_tile "btn_write"
-            "(progn (setq result-list '()) (setq i 0) (while (< i row-count) (setq result-list (append result-list (list (get_tile (strcat \"line_\" (itoa i)))))) (setq i (1+ i))) (done_dialog 4))"
+            "(progn (setq tmp-h (distof (get_tile \"eb_height\") 2)) (if (and tmp-h (> tmp-h 0)) (progn (setq *wwe-text-height* tmp-h) (setq *wwe-last-text-height* tmp-h) (wwe:save-last-data-to-file))) (setq result-list '()) (setq i 0) (while (< i row-count) (setq result-list (append result-list (list (get_tile (strcat \"line_\" (itoa i)))))) (setq i (1+ i))) (done_dialog 4))"
           )
           
           ;; OK button action - Update original entities
@@ -1202,7 +1238,7 @@
             "(done_dialog 2)"
           )
           
-          ;; Hidden cancel button for X close button
+          ;; Cancel button action: click / ESC / close-X exits with status 0
           (action_tile "btn_cancel"
             "(done_dialog 0)"
           )

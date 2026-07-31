@@ -53,9 +53,10 @@
   (if (not (boundp '*dbq-title*)) (setq *dbq-title* ""))
   (if (not (boundp '*dbq-paper*)) (setq *dbq-paper* 0))
   (if (not (boundp '*dbq-pw*)) (setq *dbq-pw* 297))
-  (if (not (boundp '*dbq-ph*)) (setq *dbq-ph* 210))
-  (if (not (boundp '*dbq-summary-only*)) (setq *dbq-summary-only* 0))
-  (if (not (boundp '*dbq-smart-merge*)) (setq *dbq-smart-merge* 0))
+(if (not (boundp '*dbq-ph*)) (setq *dbq-ph* 210))
+(if (not (boundp '*dbq-summary-only*)) (setq *dbq-summary-only* 0))
+(if (not (boundp '*dbq-no-summary*)) (setq *dbq-no-summary* 0))
+(if (not (boundp '*dbq-smart-merge*)) (setq *dbq-smart-merge* 0))
   (if (not (boundp '*dbq-smart-merge-row*)) (setq *dbq-smart-merge-row* 0))
   (if (not (boundp '*dbq-merge-rows*)) (setq *dbq-merge-rows* 3))
   (if (not (boundp '*dbq-append*)) (setq *dbq-append* 0))
@@ -64,6 +65,7 @@
   (if (not (boundp '*dbq-match-height*)) (setq *dbq-match-height* 0))
   (if (not (boundp '*dbq-captured-height*)) (setq *dbq-captured-height* nil))
   (if (not (boundp '*dbq-configs*)) (setq *dbq-configs* (dbq:load-configs)))
+  (if (not (boundp '*dbq-cfg-index*)) (setq *dbq-cfg-index* 0))
   (dbq:load-state)
 )
 
@@ -86,20 +88,144 @@
 )
 
 ;;; ─────────────────────────────────────────────────────────
+;;; 写出编码检测/转换的PowerShell脚本（内容为纯ASCII）
+;;; 脚本内容固定：每个CAD会话只写一次，之后直接复用；
+;;; 若临时文件被外部删除则自动重写
+;;; 返回：脚本路径，失败返回nil
+;;; ─────────────────────────────────────────────────────────
+(defun dbq:write-ansi-script (/ ps1 fp)
+  (setq ps1 (strcat (getenv "TEMP") "\\dbq_to_ansi.ps1"))
+  ;; 本会话已写过且文件还在 → 直接复用，不重写
+  (if (and (boundp '*dbq-ps1-ready*) *dbq-ps1-ready* (findfile ps1))
+    ps1
+    (progn
+      (setq fp (open ps1 "w"))
+      (if fp
+        (progn
+          (foreach s (list
+            "param([string]$Path)"
+            "$ErrorActionPreference = 'Stop'"
+            "try {"
+            "  if (-not (Test-Path -LiteralPath $Path)) { exit 1 }"
+            "  $bytes = [System.IO.File]::ReadAllBytes($Path)"
+            "  if ($bytes.Length -eq 0) { exit 0 }"
+            "  $ansi = [System.Text.Encoding]::Default"
+            "  if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {"
+            "    $text = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)"
+            "    [System.IO.File]::WriteAllBytes($Path, $ansi.GetBytes($text))"
+            "    exit 2"
+            "  }"
+            "  if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {"
+            "    $text = [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)"
+            "    [System.IO.File]::WriteAllBytes($Path, $ansi.GetBytes($text))"
+            "    exit 2"
+            "  }"
+            "  $start = 0"
+            "  $hasBom = $false"
+            "  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {"
+            "    $hasBom = $true"
+            "    $start = 3"
+            "  }"
+            "  $strict = New-Object System.Text.UTF8Encoding($false, $true)"
+            "  $isUtf8 = $true"
+            "  $text = ''"
+            "  try { $text = $strict.GetString($bytes, $start, $bytes.Length - $start) } catch { $isUtf8 = $false }"
+            "  if (-not $isUtf8) { exit 0 }"
+            "  $hasHigh = $false"
+            "  for ($i = $start; $i -lt $bytes.Length; $i++) { if ($bytes[$i] -ge 128) { $hasHigh = $true; break } }"
+            "  if ($hasBom -or $hasHigh) {"
+            "    [System.IO.File]::WriteAllBytes($Path, $ansi.GetBytes($text))"
+            "    exit 2"
+            "  }"
+            "  exit 0"
+            "} catch { exit 1 }"
+          )
+            (write-line s fp)
+          )
+          (close fp)
+          (setq *dbq-ps1-ready* T)
+          ps1
+        )
+        nil
+      )
+    )
+  )
+)
+
+;;; ─────────────────────────────────────────────────────────
+;;; 安全更新底部状态栏 t_status
+;;; 对话框未打开时 set_tile 会报错，故用 vl-catch-all-apply 静默忽略
+;;; ─────────────────────────────────────────────────────────
+(defun dbq:set-status (msg)
+  (vl-catch-all-apply 'set_tile (list "t_status" msg))
+)
+
+;;; ─────────────────────────────────────────────────────────
+;;; 确保TXT文件为ANSI编码
+;;; 检测 UTF-8(含BOM/无BOM) / UTF-16 LE / UTF-16 BE，
+;;; 若不是ANSI则先自动转换为ANSI后再读取
+;;; 实现：复用会话内已写出的PowerShell脚本，隐藏窗口同步执行
+;;; 脚本退出码：0=本身已是ANSI  2=已转换  1=失败
+;;; ─────────────────────────────────────────────────────────
+(defun dbq:ensure-ansi (fn / ps1 wsh cmd ret)
+  (if (and fn (findfile fn))
+    (progn
+      ;; 1. 获取检测脚本（会话内只写一次，后续直接复用）
+      (setq ps1 (dbq:write-ansi-script))
+      (if ps1
+        (progn
+          ;; 2. 隐藏窗口同步执行，等待转换完成后才继续读文件
+          (setq wsh (vlax-create-object "WScript.Shell"))
+          (if wsh
+            (progn
+              ;; 转码需要时间，先在底部状态栏提示用户等待
+              (dbq:set-status "正在检测TXT编码，非ANSI将自动转换，请稍候...")
+              (setq cmd (strcat "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" ps1 "\" \"" fn "\""))
+              (setq ret (vl-catch-all-apply 'vlax-invoke-method (list wsh 'Run cmd 0 :vlax-true)))
+              (vlax-release-object wsh)
+              (cond
+                ((vl-catch-all-error-p ret)
+                 (dbq:set-status "编码检测执行失败，已按原文件直接读取")
+                 (prompt "\n[DBQ] 编码检测执行失败，按原文件直接读取。"))
+                ((= ret 2)
+                 (dbq:set-status "检测到UTF-8/UTF-16编码，已自动转换为ANSI")
+                 (prompt (strcat "\n[DBQ] 检测到非ANSI编码(UTF-8/UTF-16)，已自动转换为ANSI：" fn)))
+                ((= ret 1)
+                 (dbq:set-status "编码转换失败，已按原文件直接读取")
+                 (prompt "\n[DBQ] 编码转换失败，按原文件直接读取。"))
+                (t
+                 (dbq:set-status "")) ; 本身已是ANSI，清空提示
+              )
+            )
+            (prompt "\n[DBQ] 无法创建WScript.Shell，跳过编码检测。")
+          )
+        )
+        (prompt "\n[DBQ] 无法写出编码检测脚本，跳过编码检测。")
+      )
+    )
+  )
+  fn
+)
+
+;;; ─────────────────────────────────────────────────────────
 ;;; 读取TXT文件
-;;; 支持：ANSI / UTF-8 BOM
+;;; 支持：ANSI / UTF-8(含BOM/无BOM) / UTF-16（非ANSI自动先转ANSI）
 ;;; 自动过滤：空行、\r、首尾空格
 ;;; ─────────────────────────────────────────────────────────
 (defun dbq:read-txt (fn / fp ln lst)
   (setq lst nil)
+  ;; 读取前先确保文件为ANSI编码（非ANSI自动转换）
+  (dbq:ensure-ansi fn)
   (setq fp (open fn "r"))
   (if (null fp)
     (progn (alert (strcat "无法打开文件：\n" fn)) nil)
     (progn
       (while (setq ln (read-line fp))
-        ;; 去除 UTF-8 BOM (0xEF=239, 0xBB=187, 0xBF=191)
-        (if (and (>= (strlen ln) 1)
-                 (= (ascii (substr ln 1 1)) 239))
+        ;; 去除 UTF-8 BOM (0xEF=239, 0xBB=187, 0xBF=191)，三字节完整匹配（转换失败时的兜底）
+        (if (and (>= (strlen ln) 3)
+                 (= (ascii (substr ln 1 1)) 239)
+                 (= (ascii (substr ln 2 1)) 187)
+                 (= (ascii (substr ln 3 1)) 191))
           (setq ln (substr ln 4))
         )
         ;; 去除首尾空白和回车
@@ -1441,8 +1567,8 @@
     (if (/= g cur-grp)
       (progn
         (dbq:a4-box a4x a4y)
-        ;; 如果是第一页（g=0），在右侧绘制分类汇总
-        (if (= g 0)
+        ;; 如果是第一页（g=0）且未勾选"不生成分类汇总"，在右侧绘制分类汇总
+        (if (and (= g 0) (/= *dbq-no-summary* 1))
           (dbq:draw-summary (+ a4x dbq:pw 20) a4y stats use-captured-height)
         )
         (setq cur-grp g
@@ -1461,7 +1587,7 @@
 ;;; ─────────────────────────────────────────────────────────
 (defun dbq:write-dcl (/ fn fp)
   (setq fn (strcat (getenv "TEMP") "\\dbq.dcl"))
-  (if (not (findfile fn))
+  (if T
     (progn
       (setq fp (open fn "w"))
       (foreach s (list
@@ -1594,10 +1720,17 @@
     "    key         = \"e_cfglist\";"
     "    width       = 46;"
     "  }"
-     "  : toggle {"
-     "    key         = \"cb_summary_only\";"
-     "    label       = \"仅生成分类汇总\";"
-     "    value       = \"0\";"
+     "  : row {"
+     "    : toggle {"
+     "      key         = \"cb_summary_only\";"
+     "      label       = \"仅生成分类汇总\";"
+     "      value       = \"0\";"
+     "    }"
+     "    : toggle {"
+     "      key         = \"cb_no_summary\";"
+     "      label       = \"不生成分类汇总\";"
+     "      value       = \"0\";"
+     "    }"
      "  }"
      "  : toggle {"
      "    key         = \"cb_match_height\";"
@@ -1676,6 +1809,12 @@
     "      width       = 16;"
     "      fixed_width = true;"
     "    }"
+    "  }"
+    "  : text {"
+    "    key         = \"t_status\";"
+    "    label       = \"\";"
+    "    width       = 50;"
+    "    alignment   = centered;"
     "  }"
     "}"
   )
@@ -1872,10 +2011,20 @@
           (progn (mode_tile "e_pw" 0) (mode_tile "e_ph" 0))
           (progn (mode_tile "e_pw" 1) (mode_tile "e_ph" 1))
         )
-        ;; 填充配置下拉框，默认选中第一个
+        ;; 填充配置下拉框，恢复上次选中的配置
         (dbq:populate-cfglist)
-        (if *dbq-configs* (dbq:apply-config 0))
+        (if *dbq-configs*
+          (progn
+            (if (or (null *dbq-cfg-index*)
+                    (< *dbq-cfg-index* 0)
+                    (>= *dbq-cfg-index* (length *dbq-configs*)))
+              (setq *dbq-cfg-index* 0))
+            (dbq:apply-config *dbq-cfg-index*)
+            (set_tile "e_cfglist" (itoa *dbq-cfg-index*))
+          )
+        )
         (set_tile "cb_summary_only" (itoa (if (and (boundp '*dbq-summary-only*) *dbq-summary-only*) *dbq-summary-only* 0)))
+        (set_tile "cb_no_summary" (itoa (if (and (boundp '*dbq-no-summary*) *dbq-no-summary*) *dbq-no-summary* 0)))
         (set_tile "cb_match_height" (itoa (if (and (boundp '*dbq-match-height*) *dbq-match-height*) *dbq-match-height* 0)))
         (set_tile "cb_smart_merge" (itoa (if (and (boundp '*dbq-smart-merge*) *dbq-smart-merge*) *dbq-smart-merge* 0)))
         (set_tile "cb_smart_merge_row" (itoa (if (and (boundp '*dbq-smart-merge-row*) *dbq-smart-merge-row*) *dbq-smart-merge-row* 0)))
@@ -1924,7 +2073,17 @@
                                        (t 2))
                      *dbq-pw* (atoi (get_tile "e_pw"))
                      *dbq-ph* (atoi (get_tile "e_ph")))
-               (setq _fn (getfiled "请选择标签TXT文件" *dbq-path* "txt" 0))
+               ;; 判断当前是否已有选择的文件地址，如有则先清除已有的
+               (setq _old *dbq-path*)
+               (if (and _old (/= _old ""))
+                 (progn
+                   (setq *dbq-path* ""
+                         *dbq-data* nil)
+                   (set_tile "epath" "")
+                   (dbq:update-file-lines-label)
+                 )
+               )
+               (setq _fn (getfiled "请选择标签TXT文件" _old "txt" 0))
                (if _fn
                  (progn
                    (setq *dbq-path* _fn)
@@ -1949,9 +2108,12 @@
         (action_tile "e_oh" "(if (and (= (get_tile \"rb_custom\") \"1\") (boundp '*dbq-data*) *dbq-data*) (dbq:auto-calc-height) (dbq:update-preview))")
         (action_tile "e_hg" "(if (and (= (get_tile \"rb_custom\") \"1\") (boundp '*dbq-data*) *dbq-data*) (dbq:auto-calc-height) (dbq:update-preview))")
         (action_tile "e_vg" "(if (and (= (get_tile \"rb_custom\") \"1\") (boundp '*dbq-data*) *dbq-data*) (dbq:auto-calc-height) (dbq:update-preview))")
-        (action_tile "cb_summary_only"
-          "(if (= (get_tile \"cb_summary_only\") \"1\") (progn (mode_tile \"e_title\" 1)(mode_tile \"e_iw\" 1)(mode_tile \"e_ih\" 1)(mode_tile \"e_ow\" 1)(mode_tile \"e_oh\" 1)(mode_tile \"e_ns\" 1)(mode_tile \"e_cb\" 1)(mode_tile \"e_th\" 1)(mode_tile \"e_hg\" 1)(mode_tile \"e_vg\" 1)) (progn (mode_tile \"e_title\" 0)(mode_tile \"e_iw\" 0)(mode_tile \"e_ih\" 0)(mode_tile \"e_ow\" 0)(mode_tile \"e_oh\" 0)(mode_tile \"e_ns\" 0)(mode_tile \"e_cb\" 0)(mode_tile \"e_th\" 0)(mode_tile \"e_hg\" 0)(mode_tile \"e_vg\" 0)))"
-        )
+(action_tile "cb_summary_only"
+"(if (= (get_tile \"cb_summary_only\") \"1\") (progn (set_tile \"cb_no_summary\" \"0\")(mode_tile \"e_title\" 1)(mode_tile \"e_iw\" 1)(mode_tile \"e_ih\" 1)(mode_tile \"e_ow\" 1)(mode_tile \"e_oh\" 1)(mode_tile \"e_ns\" 1)(mode_tile \"e_cb\" 1)(mode_tile \"e_th\" 1)(mode_tile \"e_hg\" 1)(mode_tile \"e_vg\" 1)) (progn (mode_tile \"e_title\" 0)(mode_tile \"e_iw\" 0)(mode_tile \"e_ih\" 0)(mode_tile \"e_ow\" 0)(mode_tile \"e_oh\" 0)(mode_tile \"e_ns\" 0)(mode_tile \"e_cb\" 0)(mode_tile \"e_th\" 0)(mode_tile \"e_hg\" 0)(mode_tile \"e_vg\" 0)))"
+)
+(action_tile "cb_no_summary"
+"(if (= (get_tile \"cb_no_summary\") \"1\") (progn (set_tile \"cb_summary_only\" \"0\")(mode_tile \"e_title\" 0)(mode_tile \"e_iw\" 0)(mode_tile \"e_ih\" 0)(mode_tile \"e_ow\" 0)(mode_tile \"e_oh\" 0)(mode_tile \"e_ns\" 0)(mode_tile \"e_cb\" 0)(mode_tile \"e_th\" 0)(mode_tile \"e_hg\" 0)(mode_tile \"e_vg\" 0)))"
+)
         (action_tile "cb_smart_merge"
           "(if (= (get_tile \"cb_smart_merge\") \"1\") (set_tile \"cb_smart_merge_row\" \"0\"))"
         )
@@ -1969,6 +2131,7 @@
             '(progn
                (setq *dbq-title* (get_tile "e_title"))
                (setq *dbq-summary-only* (atoi (get_tile "cb_summary_only")))
+               (setq *dbq-no-summary* (atoi (get_tile "cb_no_summary")))
                (setq *dbq-match-height* (atoi (get_tile "cb_match_height")))
                (setq *dbq-smart-merge* (atoi (get_tile "cb_smart_merge")))
                (setq *dbq-smart-merge-row* (atoi (get_tile "cb_smart_merge_row")))
@@ -1976,6 +2139,7 @@
                (setq *dbq-append* (atoi (get_tile "cb_append")))
                 (setq *dbq-rowtol* (atof (get_tile "e_rowtol")))
                 (if (<= *dbq-rowtol* 0.0) (setq *dbq-rowtol* 0.5))
+                (setq *dbq-cfg-index* (atoi (get_tile "e_cfglist")))
                 (dbq:save-state)
                 (setq *dbq-iw* (atoi (get_tile "e_iw"))
                      *dbq-ih* (atoi (get_tile "e_ih"))
@@ -2014,6 +2178,7 @@
                      *dbq-pw* (atoi (get_tile "e_pw"))
                      *dbq-ph* (atoi (get_tile "e_ph")))
                (setq *dbq-summary-only* (atoi (get_tile "cb_summary_only")))
+               (setq *dbq-no-summary* (atoi (get_tile "cb_no_summary")))
                (setq *dbq-match-height* (atoi (get_tile "cb_match_height")))
                (setq *dbq-smart-merge* (atoi (get_tile "cb_smart_merge")))
                (setq *dbq-smart-merge-row* (atoi (get_tile "cb_smart_merge_row")))
@@ -2021,6 +2186,7 @@
                (setq *dbq-append* (atoi (get_tile "cb_append")))
                 (setq *dbq-rowtol* (atof (get_tile "e_rowtol")))
                 (if (<= *dbq-rowtol* 0.0) (setq *dbq-rowtol* 0.5))
+                (setq *dbq-cfg-index* (atoi (get_tile "e_cfglist")))
                 (dbq:save-state)
                 (if (or (null *dbq-data*) (zerop (length *dbq-data*)))
                   (alert "请先选择TXT文件，且文件中至少有一行内容！")
@@ -2054,7 +2220,8 @@
                    (setq *dbq-configs* (dbq:update-config *dbq-configs* _cfg))
                    (dbq:save-configs *dbq-configs*)
                    (dbq:populate-cfglist)
-                   (set_tile "e_cfglist" (itoa (dbq:find-config *dbq-configs* _cfgname)))
+                   (setq *dbq-cfg-index* (dbq:find-config *dbq-configs* _cfgname))
+                   (set_tile "e_cfglist" (itoa *dbq-cfg-index*))
                  )
                  (alert "请先输入配置名称！")
                )
@@ -2070,6 +2237,7 @@
                    (setq *dbq-configs* (dbq:remove-config *dbq-configs* _idx))
                    (dbq:save-configs *dbq-configs*)
                    (dbq:populate-cfglist)
+                   (setq *dbq-cfg-index* 0)
                    (if *dbq-configs*
                      (dbq:apply-config 0)
                      (set_tile "e_cfgname" "")
@@ -2506,6 +2674,8 @@
 
 (defun dbq:load-state (/ fn fp line p key val)
   (if (not (boundp '*dbq-summary-only*)) (setq *dbq-summary-only* 0))
+  (if (not (boundp '*dbq-no-summary*)) (setq *dbq-no-summary* 0))
+  (if (not (boundp '*dbq-cfg-index*)) (setq *dbq-cfg-index* 0))
   (if (not (boundp '*dbq-match-height*)) (setq *dbq-match-height* 0))
   (if (not (boundp '*dbq-smart-merge*)) (setq *dbq-smart-merge* 0))
   (if (not (boundp '*dbq-smart-merge-row*)) (setq *dbq-smart-merge-row* 0))
@@ -2524,6 +2694,8 @@
             )
             (cond
               ((= key "summary_only") (setq *dbq-summary-only* (atoi val)))
+              ((= key "no_summary") (setq *dbq-no-summary* (atoi val)))
+              ((= key "cfg_index") (setq *dbq-cfg-index* (atoi val)))
               ((= key "match_height") (setq *dbq-match-height* (atoi val)))
               ((= key "smart_merge") (setq *dbq-smart-merge* (atoi val)))
               ((= key "smart_merge_row") (setq *dbq-smart-merge-row* (atoi val)))
@@ -2544,6 +2716,8 @@
   (if fp
     (progn
       (write-line (strcat "summary_only=" (itoa (if (boundp '*dbq-summary-only*) *dbq-summary-only* 0))) fp)
+      (write-line (strcat "no_summary=" (itoa (if (boundp '*dbq-no-summary*) *dbq-no-summary* 0))) fp)
+      (write-line (strcat "cfg_index=" (itoa (if (boundp '*dbq-cfg-index*) *dbq-cfg-index* 0))) fp)
       (write-line (strcat "match_height=" (itoa (if (boundp '*dbq-match-height*) *dbq-match-height* 0))) fp)
       (write-line (strcat "smart_merge=" (itoa (if (boundp '*dbq-smart-merge*) *dbq-smart-merge* 0))) fp)
       (write-line (strcat "smart_merge_row=" (itoa (if (boundp '*dbq-smart-merge-row*) *dbq-smart-merge-row* 0))) fp)

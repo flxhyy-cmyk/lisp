@@ -3216,7 +3216,7 @@ Fail
      )
      (setq *THeight* (atof *THeight*))
    )
-  (set_tile "THeight" (rtos *THeight* 2))
+  (set_tile "THeight" (rtos *THeight* 2 1))
   (setq *RowHeight* (getenv "Excel2CAD\\RowHeight"))
   (if (null *RowHeight*)
     (progn
@@ -3225,7 +3225,7 @@ Fail
     )
     (setq *RowHeight* (atof *RowHeight*))
   )
-  (set_tile "RowHeight" (rtos *RowHeight* 2))
+  (set_tile "RowHeight" (rtos *RowHeight* 2 1))
   (setq *TableWidth* (getenv "Excel2CAD\\TableWidth"))
   (if (null *TableWidth*)
     (progn
@@ -3234,7 +3234,7 @@ Fail
     )
     (setq *TableWidth* (atof *TableWidth*))
   )
-  (set_tile "TableWidth" (rtos *TableWidth* 2))
+  (set_tile "TableWidth" (rtos *TableWidth* 2 1))
   ;;基点位置设置
   (setq *BasePointPos* (getenv "Excel2CAD\\BasePoint"))
   (if (null *BasePointPos*)
@@ -4405,13 +4405,42 @@ Fail
 ;;主程序开始
   (setierr)
 (setq Layers (gxl-table "layer"))
-  ;;对话框开始
-  ;; 
-  ;;(vl-file-delete (findfile "xl2cad.dcl"))
-   (setq dclcode (load_dialog (mkTmpDcl "xl2cad")))
-   (new_dialog "xl2cad" dclcode)
-   (start_xl2x)
-   (setq ecode (start_dialog))
+  (if *EVE-SKIP-DIALOG*
+    (progn
+      ;;跳过对话框, 直接从环境变量读取设置
+      (setq *DrawRange* (getenv "Excel2CAD\\DrawRange"))
+      (if (null *DrawRange*) (setq *DrawRange* "Used"))
+      (setq BLayer (nth 0 layers)
+            TLayer (nth 0 layers))
+      (setq *CellColor* (= "1" (getenv "Excel2CAD\\CellColor")))
+      (setq *AnnoColor* (= "1" (getenv "Excel2CAD\\AnnoColor")))
+      (setq *Oprate* (getenv "Excel2CAD\\Oprate"))
+      (if *Oprate* (setq *Oprate* (atoi *Oprate*)) (setq *Oprate* 0))
+      (setq *Merge* (= "1" (getenv "Excel2CAD\\Merge")))
+      (setq *THeight* (getenv "Excel2CAD\\THeight"))
+      (if (null *THeight*) (setq *THeight* 300.0) (setq *THeight* (atof *THeight*)))
+      (setq *RowHeight* (getenv "Excel2CAD\\RowHeight"))
+      (if (null *RowHeight*) (setq *RowHeight* 0.0) (setq *RowHeight* (atof *RowHeight*)))
+      (setq *TableWidth* (getenv "Excel2CAD\\TableWidth"))
+      (if (null *TableWidth*) (setq *TableWidth* 0.0) (setq *TableWidth* (atof *TableWidth*)))
+      (setq *BasePointPos* (getenv "Excel2CAD\\BasePoint"))
+      (if (null *BasePointPos*) (setq *BasePointPos* 0) (setq *BasePointPos* (atoi *BasePointPos*)))
+      (setq *KeepTHeight* (= "1" (getenv "Excel2CAD\\KeepTHeight")))
+      (setq *pageSetUp* (= "1" (getenv "Excel2CAD\\pageSetUp")))
+      (setq *defaultColor* (getenv "Excel2CAD\\defaultColor"))
+      (if (null *defaultColor*) (setq *defaultColor* 0) (setq *defaultColor* (atoi *defaultColor*)))
+      (if (/= 0 *defaultColor*) (setq *defaultColor* 256))
+      (setq ecode 1)
+      (setq *EVE-SKIP-DIALOG* nil)
+    )
+    (progn
+      ;;对话框开始
+      (setq dclcode (load_dialog (mkTmpDcl "xl2cad")))
+      (new_dialog "xl2cad" dclcode)
+      (start_xl2x)
+      (setq ecode (start_dialog))
+    )
+  )
   (cond
     ((= 1 ecode)
   (if *CellColor* (setvar "REGENMODE" 0))
@@ -4512,10 +4541,15 @@ Fail
       (setq HPageBreaks (reverse HPageBreaks)) ;_ 储存分页的Row位置
     )
   )
-  (initget 7)
-  (setq StartPoint (getpoint "\n放置位置:"))
-  (setq StartPoint (trans StartPoint 1 0)
-        BasePoint StartPoint)
+  (if *EVE-PRESET-PT*
+    (setq StartPoint *EVE-PRESET-PT*
+          BasePoint StartPoint
+          *EVE-PRESET-PT* nil)
+    (progn
+      (initget 7)
+      (setq StartPoint (getpoint "\n放置位置:"))
+      (setq StartPoint (trans StartPoint 1 0)
+            BasePoint StartPoint)))
   (setq	curpt  StartPoint
 	OldRow nil
 	to (vlax-get-property cells 'count)
@@ -4881,7 +4915,7 @@ Fail
 			  )
 			)
 		      )
-		      (gxl-BLK-UnBlockBase ss 4)
+		      (gxl-BLK-UnBlockBase ss (nth *BasePointPos* '(4 1 3 2)))
 		      (setq endent (entlast))
 		     )
 		   )
@@ -5222,7 +5256,7 @@ Fail
       (gxl-AX:AddUnNameGroup ss)
       )
      ((= 2 *Oprate*)
-      (gxl-BLK-UnBlockBase ss 4)
+      (gxl-BLK-UnBlockBase ss (nth *BasePointPos* '(4 1 3 2)))
       )
      )
      (vlax-release-object *xlapp*)
@@ -5230,6 +5264,54 @@ Fail
     )
   (reerr)
 (princ)
+)
+(princ)
+;;;==================================================================
+;;; EVE - 依据块插入点执行EV功能 (无对话框版)
+;;;------------------------------------------------------------------
+;;; 功能: 选择一个块(或使用预选块), 读取其插入点, 删除原块,
+;;;       然后跳过对话框, 直接复用EV上次设置, 以该插入点作为
+;;;       放置位置执行EV(Excel转CAD)功能
+;;;------------------------------------------------------------------
+;;; 与EV的区别:
+;;;   EV  - 弹出对话框设置参数, 需手动点击放置位置
+;;;   EVE - 跳过对话框直接复用上次设置, 自动使用块插入点,
+;;;         支持预选块直接执行
+;;;------------------------------------------------------------------
+;;; 用法:
+;;;   1. 先选中一个块, 再输入EVE -> 直接执行, 无任何交互
+;;;   2. 未选中块, 输入EVE -> 提示选择块, 然后直接执行
+;;;==================================================================
+(defun c:eve (/ blkEnt ss insPt)
+  (setq *EVE-PRESET-PT* nil
+        *EVE-SKIP-DIALOG* nil)
+  ;; 检查是否有预选块
+  (if (setq ss (ssget "i" '((0 . "INSERT"))))
+    (setq blkEnt (ssname ss 0))
+    ;; 没有预选块, 提示用户选择
+    (while (not blkEnt)
+      (setq blkEnt (car (entsel "\n选择要替换的块: ")))
+      (cond
+        ((not blkEnt)
+         (princ "\n未选择对象, 请重试。")
+        )
+        ((/= "INSERT" (cdr (assoc 0 (entget blkEnt))))
+         (princ "\n所选对象不是块, 请重试。")
+         (setq blkEnt nil)
+        )
+      )
+    )
+  )
+  ;; 读取插入点并删除原块
+  (setq insPt (cdr (assoc 10 (entget blkEnt))))
+  (entdel blkEnt)
+  ;; 设置预设点和跳过对话框标志
+  (setq *EVE-PRESET-PT* insPt
+        *EVE-SKIP-DIALOG* T)
+  (c:ev)
+  ;; 清理标志
+  (setq *EVE-SKIP-DIALOG* nil)
+  (princ)
 )
 (princ)
 ;;***************
