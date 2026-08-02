@@ -8,6 +8,8 @@
 
 ;; ---------------- 全局变量 ----------------
 (setq *wtf-dcl-file* (strcat (getenv "TEMP") "\\wtf_dialog.dcl"))
+;; 减少标记对话框的临时DCL文件(按当前标记动态生成行)
+(setq *wtf-mark-del-dcl-file* (strcat (getenv "TEMP") "\\wtf_mark_del.dcl"))
 ;; 搜索结果列表，每项: (文字内容 X Y Z 实体名)
 (setq *wtf-results* nil)
 ;; 上次搜索关键词
@@ -32,8 +34,17 @@
 (setq *wtf-stat-current* nil)
 ;; 标记统计窗口上次显示的标记序号(用于数量定义后刷新列表)
 (setq *wtf-stat-last-idx* nil)
+;; 标记统计窗口点击列表项选中的待定位关键词(为nil时表示非定位退出)
+(setq *wtf-stat-locate-kw* nil)
+;; 标记统计窗口列表上次选中索引(定位返回后恢复列表滚动位置)
+(setq *wtf-stat-last-sel* nil)
 ;; 关键词到数量的映射(关联列表: (("关键词" . "数量") ...)，由数量定义功能写入)
 (setq *wtf-keyword-qty* nil)
+;; 备份列表: ((备份名 关键词列表 标记定义 标记开关 标记映射 数量映射 上次搜索 位置映射 滚动位置) ...)
+;; 备份名用关键词数量命名，如 "15个关键词"
+(setq *wtf-backups* nil)
+;; 定位缩放比例分母(文字约占屏1/N)，默认1/30，可在主界面点击"定位"按钮从预设值中修改
+(setq *wtf-zoom-denominator* 30)
 
 ;; ============================================================
 ;;  生成 DCL 对话框
@@ -49,28 +60,23 @@
   (write-line "  : row {" f)
   ;; ---- 左侧: 批量关键词列表区 ----
   (write-line "    : column {" f)
+  (write-line "      : boxed_column {" f)
+  (write-line "        label = \"备份数据 (点击切换):\";" f)
+  (write-line "        : list_box {" f)
+  (write-line "          key = \"backup_list\";" f)
+  (write-line "          height = 6;" f)
+  (write-line "          width = 20;" f)
+  (write-line "        }" f)
+  (write-line "      }" f)
   (write-line "      : button {" f)
   (write-line "        key = \"btn_add_keywords\";" f)
   (write-line "        label = \"批量添加(剪贴板)\";" f)
   (write-line "        width = 20;" f)
   (write-line "      }" f)
-  (write-line "      : button {" f)
-  (write-line "        key = \"btn_clear_data\";" f)
-  (write-line "        label = \"清除缓存数据\";" f)
-  (write-line "        width = 20;" f)
-  (write-line "      }" f)
-  (write-line "      : row {" f)
-  (write-line "        : button { key = \"btn_mark_def\"; label = \"标记\"; width = 9; }" f)
-  (write-line "        : button { key = \"btn_mark_stat\"; label = \"标记统计\"; width = 9; }" f)
-  (write-line "      }" f)
-  (write-line "      : toggle {" f)
-  (write-line "        key = \"tg_mark_enable\";" f)
-  (write-line "        label = \"启用标记\";" f)
-  (write-line "      }" f)
   (write-line "      : list_box {" f)
   (write-line "        key = \"keyword_list\";" f)
   (write-line "        label = \"关键词列表 (点击查找):\";" f)
-  (write-line "        height = 18;" f)
+  (write-line "        height = 15;" f)
   (write-line "        width = 20;" f)
   (write-line "      }" f)
   (write-line "    }" f)
@@ -85,13 +91,22 @@
   (write-line "      : row {" f)
   (write-line "        : radio_button { key = \"rb_all\"; label = \"全图查找\"; }" f)
   (write-line "        : radio_button { key = \"rb_window\"; label = \"框选范围查找\"; }" f)
+  (write-line "        : toggle { key = \"tg_mark_enable\"; label = \"启用标记\"; }" f)
   (write-line "      }" f)
-  (write-line "      : button {" f)
-  (write-line "        key = \"btn_search\";" f)
-  (write-line "        label = \"查找\";" f)
-  (write-line "        width = 12;" f)
-  (write-line "        is_default = true;" f)
-  (write-line "        alignment = centered;" f)
+  (write-line "      : row {" f)
+  (write-line "        : button {" f)
+  (write-line "          key = \"btn_clear_data\";" f)
+  (write-line "          label = \"清除缓存数据\";" f)
+  (write-line "          width = 9;" f)
+  (write-line "        }" f)
+  (write-line "        : button { key = \"btn_mark_def\"; label = \"标记\"; width = 9; }" f)
+  (write-line "        : button { key = \"btn_mark_stat\"; label = \"标记统计\"; width = 9; }" f)
+  (write-line "        : button {" f)
+  (write-line "          key = \"btn_search\";" f)
+  (write-line "          label = \"查找\";" f)
+  (write-line "          width = 12;" f)
+  (write-line "          is_default = true;" f)
+  (write-line "        }" f)
   (write-line "      }" f)
   (write-line "      : list_box {" f)
   (write-line "        key = \"result_list\";" f)
@@ -106,10 +121,20 @@
   (write-line "      }" f)
   (write-line "      spacer_1;" f)
   (write-line "      : row {" f)
-  (write-line "        : button { key = \"btn_locate\"; label = \"定位\"; width = 12; }" f)
+  (write-line (strcat "        : button { key = \"btn_locate\"; label = \"定位 1/"
+                      (itoa *wtf-zoom-denominator*)
+                      "\"; width = 14; }") f)
   (write-line "        : button { key = \"btn_exit\"; label = \"退出\"; width = 12; is_cancel = true; }" f)
   (write-line "      }" f)
   (write-line "    }" f)
+  (write-line "  }" f)
+  ;; 底部状态条: 显示选中关键词的完整标记信息(横跨整个对话框底部)
+  (write-line "  : text {" f)
+  (write-line "    key = \"keyword_status\";" f)
+  (write-line "    label = \"\";" f)
+  (write-line "    alignment = left;" f)
+  (write-line "    width = 55;" f)
+  (write-line "    height = 2;" f)
   (write-line "  }" f)
   (write-line "}" f)
 
@@ -123,6 +148,24 @@
   (write-line "    edit_limit = 500;" f)
   (write-line "  }" f)
   (write-line "  : text { label = \"示例: 重要&待核对&已完成 (最多35个，快捷键1-9和A-Z)\"; }" f)
+  (write-line "  : row {" f)
+  (write-line "    : button { key = \"btn_mark_add\"; label = \"增加标记\"; width = 14; }" f)
+  (write-line "    : button { key = \"btn_mark_del\"; label = \"减少标记\"; width = 14; }" f)
+  (write-line "  }" f)
+  (write-line "  : text { key = \"mark_status\"; label = \"\"; width = 44; }" f)
+  (write-line "  ok_cancel;" f)
+  (write-line "}" f)
+
+  ;; ---- 增加标记输入对话框(嵌套调用) ----
+  (write-line "wtf_mark_add : dialog {" f)
+  (write-line "  label = \"增加标记\";" f)
+  (write-line "  : edit_box {" f)
+  (write-line "    key = \"mark_add_input\";" f)
+  (write-line "    label = \"新标记(用&分隔):\";" f)
+  (write-line "    edit_width = 40;" f)
+  (write-line "    edit_limit = 100;" f)
+  (write-line "  }" f)
+  (write-line "  : text { key = \"mark_add_status\"; label = \"\"; width = 44; }" f)
   (write-line "  ok_cancel;" f)
   (write-line "}" f)
 
@@ -173,6 +216,39 @@
   (write-line "  ok_cancel;" f)
   (write-line "}" f)
 
+  ;; ---- 管理员密码确认对话框(清除数据前) ----
+  (write-line "wtf_admin_confirm : dialog {" f)
+  (write-line "  label = \"管理员确认\";" f)
+  (write-line "  : text { label = \"此操作将清除全部已保存的数据，请输入管理员密码确认:\"; alignment = left; }" f)
+  (write-line "  : edit_box {" f)
+  (write-line "    key = \"admin_pwd\";" f)
+  (write-line "    label = \"密码:\";" f)
+  (write-line "    password_char = \"*\";" f)
+  (write-line "    edit_width = 16;" f)
+  (write-line "  }" f)
+  (write-line "  : row {" f)
+  (write-line "    : button { key = \"admin_ok\"; label = \"确定\"; width = 10; is_default = true; }" f)
+  (write-line "    : button { key = \"admin_cancel\"; label = \"取消\"; width = 10; is_cancel = true; }" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+
+  ;; ---- 定位比例设置对话框 ----
+  (write-line "wtf_zoom_set : dialog {" f)
+  (write-line "  label = \"设置定位比例\";" f)
+  (write-line "  : boxed_radio_column {" f)
+  (write-line "    label = \"选择文字占屏比例:\";" f)
+  (write-line "    : radio_button { key = \"z1_20\"; label = \"1/20\"; }" f)
+  (write-line "    : radio_button { key = \"z1_30\"; label = \"1/30\"; }" f)
+  (write-line "    : radio_button { key = \"z1_40\"; label = \"1/40\"; }" f)
+  (write-line "    : radio_button { key = \"z1_50\"; label = \"1/50\"; }" f)
+  (write-line "    : radio_button { key = \"z1_60\"; label = \"1/60\"; }" f)
+  (write-line "    : radio_button { key = \"z1_80\"; label = \"1/80\"; }" f)
+  (write-line "    : radio_button { key = \"z1_100\"; label = \"1/100\"; }" f)
+  (write-line "  }" f)
+  (write-line "  : text { key = \"zoom_status\"; label = \"\"; alignment = centered; }" f)
+  (write-line "  ok_cancel;" f)
+  (write-line "}" f)
+
   (close f)
   (princ)
 )
@@ -192,8 +268,10 @@
   )
 )
 
-;; 简单清理 MTEXT 格式码 (换行符等)
-(defun wtf:clean-mtext (str)
+;; 清理 MTEXT 格式码
+;; 换行码\P\p、非断行空格\~ 替换为空格，其余格式码(字体\f、字号\H、颜色\C、对齐\A、
+;; 堆叠\S、宽度\W、行距\T、斜角\Q、下划线\L\l、上划线\O\o、删除线\K\k、列\N、Unicode\U+ 等)全部删除
+(defun wtf:clean-mtext (str / out i nch nstr j skip)
   (while (vl-string-search "\\P" str)
     (setq str (vl-string-subst " " "\\P" str))
   )
@@ -203,7 +281,52 @@
   (while (vl-string-search "\\~" str)
     (setq str (vl-string-subst " " "\\~" str))
   )
-  str
+  (setq out "")
+  (setq i 1)
+  (while (<= i (strlen str))
+    (setq nch (substr str i 1))
+    (if (/= (ascii nch) 92)
+      (progn
+        (setq out (strcat out nch))
+        (setq i (1+ i))
+      )
+      (progn
+        (setq nstr (substr str (+ i 1) 1))
+        (cond
+          ;; Unicode 转义 \U+XXXX 整体删除
+          ((and nstr (= nstr "U") (= (substr str (+ i 2) 1) "+"))
+            (setq i (+ i 2))
+            (while (and (<= i (strlen str))
+                        (or (and (>= (substr str i 1) "0") (<= (substr str i 1) "9"))
+                            (and (>= (substr str i 1) "A") (<= (substr str i 1) "F"))
+                            (and (>= (substr str i 1) "a") (<= (substr str i 1) "f"))))
+              (setq i (1+ i))
+            )
+          )
+          ;; 单字符控制码(无分号结尾): 反斜杠+该字符整体删除
+          ((and nstr (vl-string-search nstr "\\Pp~LlOoKkUN e"))
+            (setq i (+ i 2))
+          )
+          ;; 以分号结尾的格式码(如 \f...; \H...; \C...; \A...; \S...; \W...; \T...; \Q...): 整体删除
+          (t
+            (setq skip nil)
+            (setq j (+ i 2))
+            (while (and (not skip) (<= j (strlen str)))
+              (if (= (substr str j 1) ";")
+                (setq skip T)
+                (setq j (1+ j))
+              )
+            )
+            (if skip
+              (setq i (+ j 1))
+              (setq i (+ i 1))
+            )
+          )
+        )
+      )
+    )
+  )
+  out
 )
 
 ;; 生成列表显示行
@@ -232,6 +355,30 @@
   (if (= cnt 0)
     (set_tile "status" "暂无结果，请输入关键词后点击查找")
     (set_tile "status" (strcat "共找到 " (itoa cnt) " 个结果"))
+  )
+)
+
+;; 更新关键词状态条: 显示当前选中关键词的完整标记信息
+(defun wtf:update-keyword-status ( / idx kw mks qty line)
+  (setq idx (get_tile "keyword_list"))
+  (if (and idx (/= idx ""))
+    (progn
+      (setq idx (atoi idx))
+      (if (and *wtf-keyword-list* (>= idx 0) (< idx (length *wtf-keyword-list*)))
+        (progn
+          (setq kw (nth idx *wtf-keyword-list*))
+          (setq line (strcat "关键词: " kw))
+          (setq mks (wtf:get-keyword-marks kw))
+          (if mks
+            (setq line (strcat line "    标记: " (wtf:mark-names mks))))
+          (setq qty (wtf:get-keyword-qty kw))
+          (if qty (setq line (strcat line "    数量: " qty)))
+          (set_tile "keyword_status" line)
+        )
+        (set_tile "keyword_status" "")
+      )
+    )
+    (set_tile "keyword_status" "")
   )
 )
 
@@ -427,6 +574,7 @@
     (t (princ "\n[WTF] 输入的快捷键无对应标记，保持原标记"))
   )
   (wtf:save-data)
+  (wtf:sync-backup-marks)
 )
 
 ;; ============================================================
@@ -472,6 +620,140 @@
 
   (princ (strcat "\n[WTF] 从剪贴板加载了 " (itoa (length *wtf-keyword-list*)) " 个关键词"))
   *wtf-keyword-list*
+)
+
+;; ============================================================
+;;  备份功能
+;;  备份当前缓存数据，备份名用关键词数量命名
+;;  用于批量添加替换前自动备份，以及主界面切换备份数据
+;; ============================================================
+
+;; 根据当前关键词数量生成备份名
+(defun wtf:backup-name (n)
+  (strcat (itoa n) "个关键词")
+)
+
+;; 备份当前数据，若已有同名备份则覆盖
+(defun wtf:backup-current ( / n name new-list item)
+  (if (and *wtf-keyword-list* (> (length *wtf-keyword-list*) 0))
+    (progn
+      (setq n (length *wtf-keyword-list*))
+      (setq name (wtf:backup-name n))
+      ;; 移除同名备份
+      (setq new-list nil)
+      (foreach item *wtf-backups*
+        (if (/= (car item) name)
+          (setq new-list (append new-list (list item)))
+        )
+      )
+      (setq new-list (append new-list
+        (list (list name *wtf-keyword-list* *wtf-mark-defs* *wtf-mark-enabled*
+                    *wtf-keyword-marks* *wtf-keyword-qty* *wtf-last-search*
+                    *wtf-last-selection* *wtf-keyword-top-idx*))))
+      (setq *wtf-backups* new-list)
+      (princ (strcat "\n[WTF] 已备份当前数据: " name))
+      T
+    )
+    (progn
+      (princ "\n[WTF] 当前无关键词数据，无需备份")
+      nil
+    )
+  )
+)
+
+;; 检查当前数据是否已有备份
+(defun wtf:has-backup ( / name)
+  (if (and *wtf-keyword-list* (> (length *wtf-keyword-list*) 0))
+    (progn
+      (setq name (wtf:backup-name (length *wtf-keyword-list*)))
+      (if (assoc name *wtf-backups*) T nil)
+    )
+    T
+  )
+)
+
+;; 恢复指定备份为当前数据，返回备份名
+(defun wtf:restore-backup (name / item)
+  (setq item (assoc name *wtf-backups*))
+  (if item
+    (progn
+      (setq *wtf-keyword-list* (nth 1 item))
+      (setq *wtf-mark-defs* (nth 2 item))
+      (setq *wtf-mark-enabled* (nth 3 item))
+      (setq *wtf-keyword-marks* (nth 4 item))
+      (setq *wtf-keyword-qty* (nth 5 item))
+      (setq *wtf-last-search* (nth 6 item))
+      (setq *wtf-last-selection* (nth 7 item))
+      (setq *wtf-keyword-top-idx* (nth 8 item))
+      (if (null *wtf-last-selection*) (setq *wtf-last-selection* nil))
+      (if (null *wtf-keyword-top-idx*) (setq *wtf-keyword-top-idx* ""))
+      (princ (strcat "\n[WTF] 已恢复备份数据: " name))
+      T
+    )
+    (progn
+      (princ (strcat "\n[WTF] 未找到备份: " name))
+      nil
+    )
+  )
+)
+
+;; 同步当前数据的标记映射与数量映射到对应备份项
+;; 打标记/改标记定义/定义数量后调用，确保不同备份拥有各自独立的标记组与数量组
+(defun wtf:sync-backup-marks ( / n name new-list item updated)
+  (setq updated nil)
+  (if (and *wtf-keyword-list* (> (length *wtf-keyword-list*) 0))
+    (progn
+      (setq n (length *wtf-keyword-list*))
+      (setq name (wtf:backup-name n))
+      (setq new-list nil)
+      (foreach item *wtf-backups*
+        (if (and (= (car item) name) (>= (length item) 9))
+          (progn
+            (setq updated T)
+            (setq new-list (append new-list
+              (list (list name (nth 1 item) (nth 2 item) (nth 3 item)
+                          *wtf-keyword-marks* *wtf-keyword-qty* (nth 6 item)
+                          (nth 7 item) (nth 8 item)))))
+          )
+          (setq new-list (append new-list (list item)))
+        )
+      )
+      (if updated
+        (setq *wtf-backups* new-list)
+      )
+    )
+  )
+  (if updated (wtf:save-data))
+)
+
+;; 更新主界面左侧备份列表显示，并选中当前数据对应的备份项
+(defun wtf:update-backup-list ( / names item cur-name cur-idx i)
+  (setq names nil)
+  (setq cur-name nil)
+  (if (and *wtf-keyword-list* (> (length *wtf-keyword-list*) 0))
+    (setq cur-name (wtf:backup-name (length *wtf-keyword-list*)))
+  )
+  (setq cur-idx nil)
+  (setq i 0)
+  (foreach item *wtf-backups*
+    (setq names (append names (list (car item))))
+    (if (and cur-name (= (car item) cur-name))
+      (setq cur-idx i)
+    )
+    (setq i (1+ i))
+  )
+  (start_list "backup_list")
+  (if (and names (> (length names) 0))
+    (foreach name names
+      (add_list name)
+    )
+    (add_list "（无备份）")
+  )
+  (end_list)
+  ;; 若当前数据对应的备份存在，则选中该项
+  (if cur-idx
+    (set_tile "backup_list" (itoa cur-idx))
+  )
 )
 
 ;; ============================================================
@@ -595,6 +877,8 @@
       (vlax-ldata-put dict "mark-enabled" *wtf-mark-enabled*)
       (vlax-ldata-put dict "keyword-marks" *wtf-keyword-marks*)
       (vlax-ldata-put dict "keyword-qty" *wtf-keyword-qty*)
+      (vlax-ldata-put dict "backups" *wtf-backups*)
+      (vlax-ldata-put dict "zoom-denominator" *wtf-zoom-denominator*)
     )
   )
 )
@@ -612,18 +896,36 @@
       (setq *wtf-mark-enabled* (vlax-ldata-get dict "mark-enabled" "0"))
       (setq *wtf-keyword-marks* (vlax-ldata-get dict "keyword-marks" nil))
       (setq *wtf-keyword-qty* (vlax-ldata-get dict "keyword-qty" nil))
+      (setq *wtf-backups* (vlax-ldata-get dict "backups" nil))
+      (setq *wtf-zoom-denominator* (vlax-ldata-get dict "zoom-denominator" 30))
       (if (null *wtf-keyword-list*) (setq *wtf-keyword-list* nil))
       (if (null *wtf-last-selection*) (setq *wtf-last-selection* nil))
       (if (null *wtf-last-search*) (setq *wtf-last-search* ""))
       (if (null *wtf-keyword-top-idx*) (setq *wtf-keyword-top-idx* ""))
       (if (null *wtf-mark-enabled*) (setq *wtf-mark-enabled* "0"))
+      (if (null *wtf-backups*) (setq *wtf-backups* nil))
     )
   )
 )
 
-;; 清除图纸中保存的数据
-(defun wtf:clear-data ( / )
-  (dictremove (namedobjdict) "WTF_DATA")
+;; 清除当前使用的数据，保留备份区域其他备份
+(defun wtf:clear-data ( / cur-name new-list item)
+  ;; 从备份列表中移除当前数据对应的备份项(如果有)
+  (setq cur-name nil)
+  (if (and *wtf-keyword-list* (> (length *wtf-keyword-list*) 0))
+    (setq cur-name (wtf:backup-name (length *wtf-keyword-list*)))
+  )
+  (if cur-name
+    (progn
+      (setq new-list nil)
+      (foreach item *wtf-backups*
+        (if (/= (car item) cur-name)
+          (setq new-list (append new-list (list item)))
+        )
+      )
+      (setq *wtf-backups* new-list)
+    )
+  )
   (setq *wtf-keyword-list* nil)
   (setq *wtf-last-selection* nil)
   (setq *wtf-last-search* "")
@@ -634,6 +936,26 @@
   (setq *wtf-keyword-qty* nil)
   (setq *wtf-cache* nil)
   (setq *wtf-cache-valid* nil)
+  ;; 重新保存数据以持久化剩余的备份
+  (wtf:save-data)
+)
+
+;; 管理员密码确认: 弹出密码输入对话框，输入admin正确才返回T
+(defun wtf:admin-verify ( / dcl_id ret)
+  (setq ret 0)
+  (setq dcl_id (load_dialog *wtf-dcl-file*))
+  (if (not (new_dialog "wtf_admin_confirm" dcl_id))
+    (princ "\n[WTF] 管理员确认对话框加载失败")
+    (progn
+      (action_tile "admin_ok"
+        "(if (= (get_tile \"admin_pwd\") \"admin\") (done_dialog 1) (set_tile \"admin_pwd\" \"\"))")
+      (action_tile "admin_cancel" "(done_dialog 0)")
+      (mode_tile "admin_pwd" 2)
+      (setq ret (start_dialog))
+    )
+  )
+  (unload_dialog dcl_id)
+  (= ret 1)
 )
 
 ;; ============================================================
@@ -738,6 +1060,184 @@
   *wtf-results*
 )
 
+;; 定位提示圆相关全局变量
+(setq *wtf-indicator-ent* nil)    ; 本次新建的全部圆实体列表(用于删除)
+(setq *wtf-indicator-front* nil)  ; 前(左)圆实体列表
+(setq *wtf-indicator-back* nil)   ; 后(右)圆实体列表
+(setq *wtf-indicator-top* nil)    ; 上圆实体列表(文本中央上方)
+(setq *wtf-indicator-bottom* nil) ; 下圆实体列表(文本中央下方)
+(setq *wtf-indicator-toggle* nil) ; 颜色互换状态
+
+;; 给实体设置颜色(无62组则追加)，并立即刷新显示
+(defun wtf:set-color (e col / ed)
+  (if (and e (setq ed (entget e)))
+    (progn
+      (if (assoc 62 ed)
+        (entmod (subst (cons 62 col) (assoc 62 ed) ed))
+        (entmod (append ed (list (cons 62 col))))
+      )
+      (redraw e)
+    )
+  )
+  (princ)
+)
+
+;; 设置实体可见性: flag=T可见, nil不可见 (用ActiveX vla-put-visible 更可靠)
+(defun wtf:set-vis (e flag / obj)
+  (if (and e (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list e))))
+    (progn
+      (vl-catch-all-apply 'vla-put-visible (list obj (if flag :vlax-true :vlax-false)))
+      (redraw e)
+    )
+  )
+  (princ)
+)
+
+;; 显示或隐藏四个提示圆 (flag=T 显示, nil 隐藏)
+(defun wtf:set-circles-visible (flag)
+  (foreach e *wtf-indicator-front*
+    (wtf:set-vis e flag)
+  )
+  (foreach e *wtf-indicator-back*
+    (wtf:set-vis e flag)
+  )
+  (foreach e *wtf-indicator-top*
+    (wtf:set-vis e flag)
+  )
+  (foreach e *wtf-indicator-bottom*
+    (wtf:set-vis e flag)
+  )
+  (princ)
+)
+
+;; 简单延时(毫秒)，用于保持圆可见窗口(纯忙等，不涉及command)
+(defun wtf:sleep (ms / t0)
+  (setq t0 (getvar "MILLISECS"))
+  (while (< (- (getvar "MILLISECS") t0) ms))
+  (princ)
+)
+
+;; 在文字前后上下各画一个与文字同字号(直径=文字高度)的实心圆提示
+;; 前(左)后(右)上下各一：前/上红，后/下绿；定位显示期间颜色循环互换
+;; DONUT 可能生成多个实体，故收集本次全部新建实体存入全局列表，返回时统一删除
+(defun wtf:draw-indicator (ent height / obj result minpt maxpt radius cx cy cxmid cy1 cy2 before e lst px py dx dy ed)
+  (wtf:erase-indicator)
+  (setq before (entlast))
+  (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
+  (if (not (vl-catch-all-error-p obj))
+    (progn
+      (setq result (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
+      (if (not (vl-catch-all-error-p result))
+        (progn
+          (setq minpt (vlax-safearray->list minpt))
+          (setq maxpt (vlax-safearray->list maxpt))
+          (setq radius (/ (float height) 2.0))
+          (if (or (null radius) (<= radius 0.0))
+            (setq radius 2.5)
+          )
+          (setq cxmid (/ (+ (car minpt) (car maxpt)) 2.0))
+          (setq cy (/ (+ (cadr minpt) (cadr maxpt)) 2.0))
+          ;; 前后圆：左右各一(垂直居中)；上下圆：中央上/下各一
+          (setq cx1 (- (car minpt) (* radius 2.0)))
+          (setq cx2 (+ (car maxpt) (* radius 2.0)))
+          (setq cy1 (+ (cadr maxpt) (* radius 2.0)))
+          (setq cy2 (- (cadr minpt) (* radius 2.0)))
+          ;; 用 DONUT(内径0)画四个实心圆
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cx1 cy 0.0) "")
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cx2 cy 0.0) "")
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cxmid cy1 0.0) "")
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cxmid cy2 0.0) "")
+          ;; 收集 before 之后新建的全部实体(可能不止一个)
+          (setq lst nil)
+          (setq e (entnext before))
+          (while e
+            (setq lst (cons e lst))
+            (if (equal e (entlast))
+              (setq e nil)
+              (setq e (entnext e))
+            )
+          )
+          (setq *wtf-indicator-ent* lst)
+          ;; 按位置划分四组：以水平/垂直中心为界，偏移大的方向决定归属
+          (setq *wtf-indicator-front* nil)
+          (setq *wtf-indicator-back* nil)
+          (setq *wtf-indicator-top* nil)
+          (setq *wtf-indicator-bottom* nil)
+          (foreach e lst
+            (if (and e (setq ed (entget e)))
+              (progn
+                (setq px (car (cdr (assoc 10 ed))))
+                (setq py (cadr (cdr (assoc 10 ed))))
+                (setq dx (abs (- px cxmid)))
+                (setq dy (abs (- py cy)))
+                (cond
+                  ((>= dx dy)
+                    (if (< px cxmid)
+                      (setq *wtf-indicator-front* (cons e *wtf-indicator-front*))
+                      (setq *wtf-indicator-back* (cons e *wtf-indicator-back*))
+                    )
+                  )
+                  (T
+                    (if (> py cy)
+                      (setq *wtf-indicator-top* (cons e *wtf-indicator-top*))
+                      (setq *wtf-indicator-bottom* (cons e *wtf-indicator-bottom*))
+                    )
+                  )
+                )
+              )
+            )
+          )
+          ;; 初始配色：前/上红，后/下绿
+          (foreach e *wtf-indicator-front* (wtf:set-color e 1))
+          (foreach e *wtf-indicator-back* (wtf:set-color e 3))
+          (foreach e *wtf-indicator-top* (wtf:set-color e 1))
+          (foreach e *wtf-indicator-bottom* (wtf:set-color e 3))
+          (setq *wtf-indicator-toggle* nil)
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+;; 互换四圆颜色(前/上红后/下绿 <-> 前/上绿后/下红)
+(defun wtf:swap-indicator-colors ()
+  (setq *wtf-indicator-toggle* (not *wtf-indicator-toggle*))
+  (if *wtf-indicator-toggle*
+    (progn
+      (foreach e *wtf-indicator-front* (wtf:set-color e 3))
+      (foreach e *wtf-indicator-back* (wtf:set-color e 1))
+      (foreach e *wtf-indicator-top* (wtf:set-color e 3))
+      (foreach e *wtf-indicator-bottom* (wtf:set-color e 1))
+    )
+    (progn
+      (foreach e *wtf-indicator-front* (wtf:set-color e 1))
+      (foreach e *wtf-indicator-back* (wtf:set-color e 3))
+      (foreach e *wtf-indicator-top* (wtf:set-color e 1))
+      (foreach e *wtf-indicator-bottom* (wtf:set-color e 3))
+    )
+  )
+  (princ)
+)
+
+;; 删除定位提示圆(若存在)
+(defun wtf:erase-indicator ()
+  (if *wtf-indicator-ent*
+    (foreach e *wtf-indicator-ent*
+      (if (and e (entget e))
+        (entdel e)
+      )
+    )
+  )
+  (setq *wtf-indicator-ent* nil)
+  (setq *wtf-indicator-front* nil)
+  (setq *wtf-indicator-back* nil)
+  (setq *wtf-indicator-top* nil)
+  (setq *wtf-indicator-bottom* nil)
+  (setq *wtf-indicator-toggle* nil)
+  (princ)
+)
+
 ;; ============================================================
 ;;  缩放定位到文字位置（约1/30屏）
 ;; ============================================================
@@ -787,19 +1287,21 @@
     (setq height 10.0)
   )
 
-  ;; 目标视图高度 = 文字高度 * 30 (文字占约1/30屏)
-  (setq target-size (* height 30.0))
+  ;; 目标视图高度 = 文字高度 * 比例分母 (文字占约1/N屏)
+  (setq target-size (* height (float *wtf-zoom-denominator*)))
 
   (command "_.ZOOM" "_C" "_non" center target-size)
+  ;; 定位后在文字前面画实心圆提示，返回时删除
+  (wtf:draw-indicator ent height)
   (princ)
 )
 
 ;; ============================================================
-;;  等待用户按键：空格返回，ESC退出
-;;  启用标记时: 数字键累积输入，空格/ESC时应用标记(整体替换，0=清除)
+;;  等待用户按键：空格/鼠标右键返回，ESC退出
+;;  启用标记时: 数字键累积输入，空格/鼠标右键/ESC时应用标记(整体替换，0=清除)
 ;;  返回 'back 或 'exit
 ;; ============================================================
-(defun wtf:wait-for-key (keyword / input done char result mark-active digits opts idx cur)
+(defun wtf:wait-for-key (keyword / input done char result mark-active digits opts idx cur flash-t)
   (setq done nil)
   (setq result nil)
   (setq digits "")
@@ -809,7 +1311,7 @@
                          (/= keyword "")))
 
   (princ "\n[WTF] 已定位到文字")
-  (princ "\n按【空格】返回列表选择下一个，按【ESC】退出")
+  (princ "\n按【空格】或鼠标右键返回列表选择下一个，按【ESC】退出")
   (if mark-active
     (progn
       ;; 显示标记选项(每个选项前带快捷键: 1-9、A-Z)
@@ -828,57 +1330,72 @@
     )
   )
 
+  (setq flash-t (getvar "MILLISECS"))
   (while (not done)
-    ;; grread nil = 不跟踪鼠标移动，只等待按键或点击
-    (setq input (vl-catch-all-apply 'grread (list nil)))
+    ;; 每300ms互换颜色(前/上红后/下绿<->前/上绿后/下红)
+    (if (>= (- (getvar "MILLISECS") flash-t) 300)
+      (progn
+        (setq flash-t (getvar "MILLISECS"))
+        (wtf:swap-indicator-colors)
+      )
+    )
+    ;; grread T 跟踪模式：检测输入
+    (setq input (vl-catch-all-apply 'grread (list T)))
     (if (vl-catch-all-error-p input)
       ;; ESC 可能触发错误，视为退出
       (progn
         (setq result 'exit)
         (setq done T)
       )
-      (if (= (car input) 2)
+      (cond
+        ;; 鼠标右键点击: 等同空格，返回列表
+        ((= (car input) 25)
+          (setq result 'back)
+          (setq done T)
+        )
         ;; 键盘输入: grread 返回值可能是整数(ASCII码)或字符串
-        (progn
-          (setq char (cadr input))
-          (cond
-            ;; 整数类型: 用 ASCII 码判断
-            ((= (type char) 'INT)
-              (cond
-                ((= char 32)  ;; 空格
-                  (setq result 'back)
-                  (setq done T)
-                )
-                ((= char 27)  ;; ESC
-                  (setq result 'exit)
-                  (setq done T)
-                )
-                ;; 数字键0-9、字母键A-Z: 启用标记时累积输入(统一转大写)
-                ((and mark-active
-                      (or (and (>= char 48) (<= char 57))
-                          (and (>= char 65) (<= char 90))
-                          (and (>= char 97) (<= char 122))))
-                  (setq digits (strcat digits (strcase (chr char))))
-                  (princ (strcat "\n[WTF] 已输入: " digits))
+        ((= (car input) 2)
+          (progn
+            (setq char (cadr input))
+            (cond
+              ;; 整数类型: 用 ASCII 码判断
+              ((= (type char) 'INT)
+                (cond
+                  ((= char 32)  ;; 空格
+                    (setq result 'back)
+                    (setq done T)
+                  )
+                  ((= char 27)  ;; ESC
+                    (setq result 'exit)
+                    (setq done T)
+                  )
+                  ;; 数字键0-9、字母键A-Z: 启用标记时累积输入(统一转大写)
+                  ((and mark-active
+                        (or (and (>= char 48) (<= char 57))
+                            (and (>= char 65) (<= char 90))
+                            (and (>= char 97) (<= char 122))))
+                    (setq digits (strcat digits (strcase (chr char))))
+                    (princ (strcat "\n[WTF] 已输入: " digits))
+                  )
                 )
               )
-            )
-            ;; 字符串类型: 用字符串比较
-            ((= (type char) 'STR)
-              (cond
-                ((or (= char " ") (= (strcase char) "SPACE"))
-                  (setq result 'back)
-                  (setq done T)
-                )
-                ((= (strcase char) "ESC")
-                  (setq result 'exit)
-                  (setq done T)
-                )
-                ((and mark-active (= (strlen char) 1)
-                      (or (and (>= char "0") (<= char "9"))
-                          (and (>= (strcase char) "A") (<= (strcase char) "Z"))))
-                  (setq digits (strcat digits (strcase char)))
-                  (princ (strcat "\n[WTF] 已输入: " digits))
+              ;; 字符串类型: 用字符串比较
+              ((= (type char) 'STR)
+                (cond
+                  ((or (= char " ") (= (strcase char) "SPACE"))
+                    (setq result 'back)
+                    (setq done T)
+                  )
+                  ((= (strcase char) "ESC")
+                    (setq result 'exit)
+                    (setq done T)
+                  )
+                  ((and mark-active (= (strlen char) 1)
+                        (or (and (>= char "0") (<= char "9"))
+                            (and (>= (strcase char) "A") (<= (strcase char) "Z"))))
+                    (setq digits (strcat digits (strcase char)))
+                    (princ (strcat "\n[WTF] 已输入: " digits))
+                  )
                 )
               )
             )
@@ -891,6 +1408,8 @@
   (if (and mark-active (/= digits ""))
     (wtf:apply-mark-input keyword digits)
   )
+  ;; 返回前删除定位提示圆
+  (wtf:erase-indicator)
   result
 )
 
@@ -939,6 +1458,211 @@
 )
 
 ;; ============================================================
+;;  标记定义辅助: 从标记定义框读取当前标记列表(trim后去除空项)
+;; ============================================================
+(defun wtf:mark-current-list ( / input)
+  (setq input (get_tile "mark_input"))
+  (vl-remove "" (mapcar 'wtf:trim-string (wtf:split-string input "&")))
+)
+
+;; ============================================================
+;;  增加标记: 嵌套对话框输入新标记(用&分隔)，合并到标记定义框
+;;  从标记定义对话框内嵌套调用，复用已加载的 dcl_id
+;; ============================================================
+(defun wtf:mark-add-dialog (dcl_id / add-input add-ret new-marks cur-marks added)
+  (if (not (new_dialog "wtf_mark_add" dcl_id))
+    (princ "\n[WTF] 增加标记对话框加载失败")
+    (progn
+      (setq add-input "")
+      (set_tile "mark_add_input" "")
+      (set_tile "mark_add_status" "输入新标记，多个用&分隔")
+      (mode_tile "mark_add_input" 2)
+      (action_tile "accept" "(setq add-input (get_tile \"mark_add_input\")) (done_dialog 1)")
+      (action_tile "cancel" "(done_dialog 0)")
+      (setq add-ret (start_dialog))
+      (if (= add-ret 1)
+        (progn
+          (setq new-marks (vl-remove "" (mapcar 'wtf:trim-string (wtf:split-string add-input "&"))))
+          (if (null new-marks)
+            (set_tile "mark_status" "未输入有效标记，未增加")
+            (progn
+              (setq cur-marks (wtf:mark-current-list))
+              (setq added 0)
+              (foreach mk new-marks
+                (if (not (member mk cur-marks))
+                  (progn
+                    (setq cur-marks (append cur-marks (list mk)))
+                    (setq added (1+ added))
+                  )
+                )
+              )
+              (set_tile "mark_input" (wtf:join-strings cur-marks "&"))
+              (set_tile "mark_status" (strcat "增加 " (itoa added)
+                                               " 个标记，当前共 " (itoa (length cur-marks)) " 个"))
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ============================================================
+;;  减少标记: 动态生成DCL列出当前标记，每个标记后附删除按钮，
+;;  点击删除即时移除，点确定后按格式回填标记定义框
+;; ============================================================
+;; 检查指定标记名是否被关键词标记应用，返回应用该标记的关键词数量
+;; 通过 *wtf-keyword-marks* (("关键词" 序号...) ...) 与 *wtf-mark-defs* 序号对应
+(defun wtf:mark-in-use-count (mark-name / i idx cnt mk pair)
+  (setq idx nil)
+  (setq cnt 0)
+  (setq i 1)
+  (foreach mk *wtf-mark-defs*
+    (if (= mk mark-name) (setq idx i))
+    (setq i (1+ i))
+  )
+  (if idx
+    (foreach pair *wtf-keyword-marks*
+      (if (member idx (cdr pair))
+        (setq cnt (1+ cnt))
+      )
+    )
+  )
+  cnt
+)
+
+;; 从列表中移除第 n 个元素(0起)
+(defun wtf:remove-nth (lst n / result i)
+  (setq result nil)
+  (setq i 0)
+  (foreach item lst
+    (if (/= i n)
+      (setq result (append result (list item)))
+    )
+    (setq i (1+ i))
+  )
+  result
+)
+(defun wtf:write-mark-del-dcl (marks / f i mk)
+  (if (findfile *wtf-mark-del-dcl-file*)
+    (vl-file-delete *wtf-mark-del-dcl-file*)
+  )
+  (setq f (open *wtf-mark-del-dcl-file* "w"))
+  (write-line "wtf_mark_del : dialog {" f)
+  (write-line "  label = \"减少标记\";" f)
+  (write-line "  : column {" f)
+  (setq i 0)
+  (foreach mk marks
+    (write-line (strcat "    : row { : text { label = \"" (itoa (1+ i)) ". " mk
+                        "\"; width = 30; alignment = left; }"
+                        " : button { key = \"del_btn_" (itoa i)
+                        "\"; label = \"删除\"; width = 8; } }") f)
+    (setq i (1+ i))
+  )
+  (write-line "  }" f)
+  (write-line "  : text { key = \"del_status\"; label = \"点击删除移除标记，点确定后生效\"; width = 44; }" f)
+  (write-line "  : row {" f)
+  (write-line "    : button { key = \"del_ok\"; label = \"确定\"; width = 10; is_default = true; }" f)
+  (write-line "    : button { key = \"del_cancel\"; label = \"取消\"; width = 10; is_cancel = true; }" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+  ;; 删除标记前确认对话框(被关键词应用时弹出)
+  (write-line "wtf_mark_del_confirm : dialog {" f)
+  (write-line "  label = \"确认删除标记\";" f)
+  (write-line "  : text { key = \"confirm_msg\"; label = \"\"; width = 52; alignment = left; }" f)
+  (write-line "  : row {" f)
+  (write-line "    : button { key = \"confirm_yes\"; label = \"继续删除\"; width = 12; is_default = true; }" f)
+  (write-line "    : button { key = \"confirm_no\"; label = \"取消\"; width = 12; is_cancel = true; }" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+  (close f)
+  *wtf-mark-del-dcl-file*
+)
+
+(defun wtf:mark-del-dialog ( / marks del-file dcl_id del-ret del-idx i result del-mark in-use cfm-id cfm-ret)
+  (setq marks (wtf:mark-current-list))
+  (if (null marks)
+    (set_tile "mark_status" "当前没有标记可删除")
+    (progn
+      (setq result nil)
+      (setq del-ret 999)
+      (while (= del-ret 999)
+        ;; 动态生成对话框
+        (wtf:write-mark-del-dcl marks)
+        (setq dcl_id (load_dialog *wtf-mark-del-dcl-file*))
+        (if (not (new_dialog "wtf_mark_del" dcl_id))
+          (progn
+            (princ "\n[WTF] 减少标记对话框加载失败")
+            (setq del-ret 0)
+          )
+          (progn
+            ;; 为每个删除按钮绑定动作
+            (setq i 0)
+            (foreach mk marks
+              (action_tile (strcat "del_btn_" (itoa i))
+                           (strcat "(setq del-idx " (itoa i) ") (done_dialog 2)"))
+              (setq i (1+ i))
+            )
+            (action_tile "del_ok" "(done_dialog 1)")
+            (action_tile "del_cancel" "(done_dialog 0)")
+            (setq del-ret (start_dialog))
+            (unload_dialog dcl_id)
+            (cond
+              ((= del-ret 2)
+                ;; 点击删除: 检查该标记是否被关键词应用，有应用则弹出确认
+                (setq del-mark (nth del-idx marks))
+                (setq in-use (if del-mark (wtf:mark-in-use-count del-mark) 0))
+                (if (> in-use 0)
+                  (progn
+                    ;; 被应用，重新加载DCL并弹出确认对话框(嵌套)
+                    (setq cfm-id (load_dialog *wtf-mark-del-dcl-file*))
+                    (if (not (new_dialog "wtf_mark_del_confirm" cfm-id))
+                      (princ "\n[WTF] 删除确认对话框加载失败")
+                      (progn
+                        (set_tile "confirm_msg"
+                          (strcat "标记 \"" del-mark "\" 已被 " (itoa in-use)
+                                  " 个关键词应用。\n删除后这些关键词将失去该标记，确定删除?"))
+                        (action_tile "confirm_yes" "(done_dialog 1)")
+                        (action_tile "confirm_no" "(done_dialog 0)")
+                        (setq cfm-ret (start_dialog))
+                        (if (= cfm-ret 1)
+                          (setq marks (wtf:remove-nth marks del-idx))
+                          nil
+                        )
+                      )
+                    )
+                    (unload_dialog cfm-id)
+                  )
+                  ;; 未被应用，直接删除
+                  (setq marks (wtf:remove-nth marks del-idx))
+                )
+                (if (null marks)
+                  (progn
+                    (set_tile "mark_input" "")
+                    (set_tile "mark_status" "所有标记已删除")
+                    (setq del-ret 0)
+                  )
+                  (setq del-ret 999)
+                )
+              )
+              ((= del-ret 1)
+                ;; 确定: 按格式回填标记定义框
+                (set_tile "mark_input" (wtf:join-strings marks "&"))
+                (set_tile "mark_status" (strcat "删除后剩余 " (itoa (length marks)) " 个标记"))
+              )
+              (t
+                ;; 取消: 不做任何修改
+                (set_tile "mark_status" "已取消，标记未修改")
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ============================================================
 ;;  标记定义对话框
 ;;  输入用&分隔的标记串，以最后一次定义为准；变更后已有关键词标记
 ;;  按名称迁移保留，仅被删除的标记名失效
@@ -954,6 +1678,8 @@
       (mode_tile "mark_input" 2)
       (action_tile "accept" "(setq input (get_tile \"mark_input\")) (done_dialog 1)")
       (action_tile "cancel" "(done_dialog 0)")
+      (action_tile "btn_mark_add" "(wtf:mark-add-dialog dcl_id)")
+      (action_tile "btn_mark_del" "(wtf:mark-del-dialog)")
       (setq ret (start_dialog))
       (if (= ret 1)
         (progn
@@ -979,12 +1705,13 @@
               (setq *wtf-mark-defs* new-defs)
               ;; 按名称迁移已有关键词标记(名称仍存在则保留，被删除的失效)
               (wtf:remap-keyword-marks old-defs new-defs)
-              (princ (strcat "\n[WTF] 已定义 " (itoa (length *wtf-mark-defs*)) " 个标记，同名标记的关键词数据已保留"))
-            )
-            (princ "\n[WTF] 标记定义未变更")
+            (princ (strcat "\n[WTF] 已定义 " (itoa (length *wtf-mark-defs*)) " 个标记，同名标记的关键词数据已保留"))
           )
-          (wtf:save-data)
+          (princ "\n[WTF] 标记定义未变更")
         )
+        (wtf:save-data)
+        (wtf:sync-backup-marks)
+      )
       )
     )
   )
@@ -998,6 +1725,26 @@
 (defun wtf:get-keyword-qty (keyword / pair)
   (setq pair (assoc keyword *wtf-keyword-qty*))
   (if pair (cdr pair) nil)
+)
+
+;; ============================================================
+;;  滚动列表框使目标项显示在可视区中间位置
+;;  与主界面关键词列表返回时的居中逻辑一致:
+;;  先选中"目标项+半屏"的锚点项触发列表向下滚动(锚点出现在可视区底部)，
+;;  再选中目标项(此时目标项已在中间位置)
+;;  key: 列表框 key; idx: 目标项索引; len: 列表项总数; half: 半屏可见项数
+;; ============================================================
+(defun wtf:center-list (key idx len half / scroll-idx)
+  (if (and idx (>= idx 0) (< idx len))
+    (progn
+      (setq scroll-idx (+ idx half))
+      (if (>= scroll-idx len)
+        (setq scroll-idx (1- len)))
+      (if (and (/= scroll-idx idx) (>= scroll-idx 0) (< scroll-idx len))
+        (set_tile key (itoa scroll-idx)))
+      (set_tile key (itoa idx))
+    )
+  )
 )
 
 (defun wtf:stat-show (idx / mks qty line)
@@ -1116,9 +1863,9 @@
           (setq ret (start_dialog))
           (if (= ret 1)
             (progn
-              ;; 确认: 整体替换数量映射并持久化
+              ;; 确认: 整体替换数量映射并同步到当前备份项
               (setq *wtf-keyword-qty* pairs)
-              (wtf:save-data)
+              (wtf:sync-backup-marks)
               ;; 刷新统计列表(若已选过标记则重新显示，带数量)
               (if *wtf-stat-last-idx*
                 (wtf:stat-show *wtf-stat-last-idx*)
@@ -1143,10 +1890,13 @@
 ;; ============================================================
 ;;  标记统计对话框
 ;;  每个标记生成一个按钮，点击后列表区显示含此标记的关键词
+;;  点击列表项可定位到该关键词(与主界面关键词列表行为一致)，返回码8
 ;; ============================================================
-(defun wtf:mark-stat-dialog ( / dcl_id i)
+(defun wtf:mark-stat-dialog ( / dcl_id i ret)
+  ;; 重置当前显示列表和待定位关键词，保留 *wtf-stat-last-idx* 和 *wtf-stat-last-sel*
+  ;; (定位返回后重新打开时恢复上次标记列表及滚动位置)
   (setq *wtf-stat-current* nil)
-  (setq *wtf-stat-last-idx* nil)
+  (setq *wtf-stat-locate-kw* nil)
   (wtf:write-dcl)
   (setq dcl_id (load_dialog *wtf-dcl-file*))
   (if (not (new_dialog "wtf_mark_stat" dcl_id))
@@ -1159,11 +1909,88 @@
                      (strcat "(wtf:stat-show " (itoa i) ")"))
         (setq i (1+ i))
       )
+      (action_tile "stat_list"
+        "(setq stat-sel-str (get_tile \"stat_list\"))
+         (if (/= stat-sel-str \"\")
+           (progn
+             (setq stat-sel-idx (atoi stat-sel-str))
+             (setq *wtf-stat-last-sel* stat-sel-idx)
+             (if (and *wtf-stat-current*
+                      (>= stat-sel-idx 0)
+                      (< stat-sel-idx (length *wtf-stat-current*)))
+               (progn
+                 (setq *wtf-stat-locate-kw* (nth stat-sel-idx *wtf-stat-current*))
+                 (done_dialog 8))
+                  (setq *wtf-stat-locate-kw* nil))))")
       (action_tile "btn_qty_def" "(wtf:qty-define-dialog dcl_id)")
       (action_tile "btn_stat_copy" "(wtf:stat-copy)")
       (action_tile "btn_stat_close" "(done_dialog 0)")
-      (set_tile "stat_status" "点击上方标记按钮查看对应关键词")
-      (start_dialog)
+      ;; 定位返回后重新打开对话框: 自动恢复上次标记对应的关键词列表及滚动位置
+      (if (and *wtf-stat-last-idx*
+               (> *wtf-stat-last-idx* 0)
+               (<= *wtf-stat-last-idx* (length *wtf-mark-defs*)))
+        (progn
+          (wtf:stat-show *wtf-stat-last-idx*)
+          ;; 恢复列表选中项并滚动到中间位置(与主界面关键词列表行为一致)
+          ;; stat_list 高度15，半屏=7
+          (wtf:center-list "stat_list" *wtf-stat-last-sel*
+                           (length *wtf-stat-current*) 7)
+        )
+        (set_tile "stat_status" "点击上方标记按钮查看对应关键词，点击列表项可定位")
+      )
+      (setq ret (start_dialog))
+    )
+  )
+  (unload_dialog dcl_id)
+  ret
+)
+
+;; ============================================================
+;;  定位比例设置
+;;  独立对话框(自行加载DCL)。选择后更新 *wtf-zoom-denominator* 并保存，
+;;  主循环随后重开主界面，按钮标签按最新比例重绘。
+;; ============================================================
+;; 读取当前选中的比例分母(DCL对话框仍激活时调用)
+(defun wtf:zoom-selected-val ( / v)
+  (setq v 30)
+  (if (= (get_tile "z1_20") "1") (setq v 20))
+  (if (= (get_tile "z1_30") "1") (setq v 30))
+  (if (= (get_tile "z1_40") "1") (setq v 40))
+  (if (= (get_tile "z1_50") "1") (setq v 50))
+  (if (= (get_tile "z1_60") "1") (setq v 60))
+  (if (= (get_tile "z1_80") "1") (setq v 80))
+  (if (= (get_tile "z1_100") "1") (setq v 100))
+  v
+)
+
+(defun wtf:zoom-dialog ( / dcl_id ret zoom-new)
+  (wtf:write-dcl)
+  (setq dcl_id (load_dialog *wtf-dcl-file*))
+  (if (not (new_dialog "wtf_zoom_set" dcl_id))
+    (princ "\n[WTF] 定位比例对话框加载失败")
+    (progn
+      ;; 预选当前比例
+      (if (= *wtf-zoom-denominator* 20) (set_tile "z1_20" "1"))
+      (if (= *wtf-zoom-denominator* 30) (set_tile "z1_30" "1"))
+      (if (= *wtf-zoom-denominator* 40) (set_tile "z1_40" "1"))
+      (if (= *wtf-zoom-denominator* 50) (set_tile "z1_50" "1"))
+      (if (= *wtf-zoom-denominator* 60) (set_tile "z1_60" "1"))
+      (if (= *wtf-zoom-denominator* 80) (set_tile "z1_80" "1"))
+      (if (= *wtf-zoom-denominator* 100) (set_tile "z1_100" "1"))
+      (set_tile "zoom_status" (strcat "当前: 1/" (itoa *wtf-zoom-denominator*)))
+      (setq zoom-new *wtf-zoom-denominator*)
+      ;; 在 accept 回调内(done_dialog之前)读取选中项，对话框结束后 get_tile 值不可靠
+      (action_tile "accept"
+        "(setq zoom-new (wtf:zoom-selected-val)) (done_dialog 1)")
+      (action_tile "cancel" "(done_dialog 0)")
+      (setq ret (start_dialog))
+      (if (= ret 1)
+        (progn
+          (setq *wtf-zoom-denominator* zoom-new)
+          (wtf:save-data)
+          (princ (strcat "\n[WTF] 定位比例设为 1/" (itoa *wtf-zoom-denominator*)))
+        )
+      )
     )
   )
   (unload_dialog dcl_id)
@@ -1175,7 +2002,7 @@
 ;; ============================================================
 (defun c:WTF ( / dcl_id code old-cmdecho old-osmode
                 search-text scope sel-str sel-idx item key-result
-                kw-sel-str kw-idx last-sel)
+                kw-sel-str kw-idx last-sel stat-ret bk-sel-str bk-name)
   ;; 从图纸加载持久化数据
   (wtf:load-data)
   (setq old-cmdecho (getvar "CMDECHO"))
@@ -1218,6 +2045,9 @@
         (wtf:update-list)
         (wtf:update-keyword-list)
         (wtf:update-status)
+        (wtf:update-keyword-status)
+        ;; 显示备份列表
+        (wtf:update-backup-list)
 
         ;; 标记功能开关初始状态
         (set_tile "tg_mark_enable" *wtf-mark-enabled*)
@@ -1238,7 +2068,19 @@
            (if (/= kw-sel-str \"\")
              (progn
                (setq *wtf-keyword-top-idx* kw-sel-str)
+               (wtf:update-keyword-status)
+               (setq kw-idx (atoi kw-sel-str))
+               (if (and *wtf-keyword-list* (< kw-idx (length *wtf-keyword-list*)))
+                 (set_tile \"search_text\" (nth kw-idx *wtf-keyword-list*)))
                (done_dialog 3)))")
+
+        (action_tile "backup_list"
+          "(setq bk-sel-str (get_tile \"backup_list\"))
+           (if (/= bk-sel-str \"\")
+             (progn
+               (setq bk-name (nth (atoi bk-sel-str) (mapcar 'car *wtf-backups*)))
+               (if bk-name
+                 (done_dialog 8))))")
 
         (action_tile "btn_search"
           "(wtf:save-keyword-pos)
@@ -1252,12 +2094,8 @@
            (if (/= sel-str \"\")
              (done_dialog 1))")
 
-        (action_tile "btn_locate"
-          "(wtf:save-keyword-pos)
-           (setq sel-str (get_tile \"result_list\"))
-           (if (/= sel-str \"\")
-             (done_dialog 1)
-             (princ \"\\n[WTF] 请先选择一个结果\"))")
+        ;; 点击定位按钮: 返回9，由主循环弹出比例选择对话框(主界面重开重绘按钮标签)
+        (action_tile "btn_locate" "(wtf:save-keyword-pos) (done_dialog 9)")
 
         (action_tile "btn_exit" "(wtf:save-keyword-pos) (done_dialog 0)")
 
@@ -1267,25 +2105,99 @@
         (unload_dialog dcl_id)
 
         (cond
-          ;; 批量添加关键词(从剪贴板)
+          ;; 批量添加关键词(从剪贴板): 列表非空时替换会覆盖已有数据，先备份再替换；列表为空则直接导入
           ((= code 4)
-            (wtf:load-keywords-from-clipboard)
-            (wtf:save-data)
+            (if (and *wtf-keyword-list* (> (length *wtf-keyword-list*) 0))
+              (progn
+                ;; 替换前先备份当前数据(以关键词数量命名)
+                (wtf:backup-current)
+                (wtf:load-keywords-from-clipboard)
+                (wtf:save-data)
+              )
+              (progn
+                (wtf:load-keywords-from-clipboard)
+                (wtf:save-data)
+              )
+            )
           )
-          ;; 清除缓存数据
+          ;; 点击备份数据: 切换加载所选备份为当前数据
+          ;; 切换前检查当前数据是否有备份，无则先备份再替换
+          ((= code 8)
+            (if (wtf:has-backup)
+              nil
+              (wtf:backup-current)
+            )
+            (if (wtf:restore-backup bk-name)
+              (progn
+                (setq search-text *wtf-last-search*)
+                (setq *wtf-last-search* search-text)
+                (wtf:save-data)
+                (wtf:do-search search-text scope)
+              )
+            )
+          )
+          ;; 清除缓存数据(需管理员密码确认)
           ((= code 5)
-            (wtf:clear-data)
-            (setq search-text "")
+            (if (wtf:admin-verify)
+              (progn
+                (wtf:clear-data)
+                (setq search-text "")
+              )
+              (princ "\n[WTF] 密码错误或已取消，未清除数据")
+            )
           )
           ;; 标记定义
           ((= code 6)
             (wtf:mark-def-dialog)
           )
+          ;; 定位比例设置(独立对话框，返回后主界面重开重绘按钮标签)
+          ((= code 9)
+            (wtf:zoom-dialog)
+          )
           ;; 标记统计
           ((= code 7)
-            (wtf:mark-stat-dialog)
+            (setq stat-ret (wtf:mark-stat-dialog))
+            ;; 循环: 从标记统计界面点击列表项定位，返回后重新打开统计对话框
+            ;; 恢复上次标记对应的关键词列表及滚动位置(从哪来回到哪)
+            (while (and (= stat-ret 8) *wtf-stat-locate-kw* (/= code 0))
+              (progn
+                (setq search-text *wtf-stat-locate-kw*)
+                (setq *wtf-last-search* search-text)
+                (wtf:do-search search-text scope)
+                ;; 优先通过句柄查找上次选择的结果项(跨会话稳定)
+                (setq last-sel (wtf:get-last-selection search-text))
+                (if last-sel
+                  (setq item (wtf:find-result-by-handle last-sel))
+                  (setq item nil))
+                ;; 无上次记录时跳转到第一个匹配结果
+                (if (not item)
+                  (if (and *wtf-results* (> (length *wtf-results*) 0))
+                    (setq item (nth 0 *wtf-results*))
+                  )
+                )
+                (if item
+                  (progn
+                    (wtf:zoom-to-text item)
+                    ;; 记录当前关键词的最后选择(保存实体句柄)
+                    (wtf:save-selection search-text (nth 4 item))
+                    ;; 保存数据到图纸
+                    (wtf:save-data)
+                    ;; 等待按键(启用标记时可输入数字打标记)
+                    (setq key-result (wtf:wait-for-key search-text))
+                    (if (eq key-result 'exit)
+                      (setq code 0)
+                    )
+                  )
+                )
+                ;; 定位返回(空格/右键)后重新打开统计对话框，恢复上次列表状态
+                (if (/= code 0)
+                  (setq stat-ret (wtf:mark-stat-dialog))
+                )
+              )
+            )
           )
           ;; 点击关键词列表项: 填充到查找框并搜索
+          ;; 优先跳转到上次定位的位置(句柄映射，跨会话稳定)，无记录时跳转第一个匹配结果
           ((= code 3)
             (setq kw-idx (atoi kw-sel-str))
             (if (and *wtf-keyword-list* (< kw-idx (length *wtf-keyword-list*)))
@@ -1293,14 +2205,24 @@
                 (setq search-text (nth kw-idx *wtf-keyword-list*))
                 (setq *wtf-last-search* search-text)
                 (wtf:do-search search-text scope)
-                ;; 通过句柄查找上次选择的结果项(跨会话稳定)
+                ;; 优先通过句柄查找上次选择的结果项(跨会话稳定)
                 (setq last-sel (wtf:get-last-selection search-text))
                 (if last-sel
                   (setq item (wtf:find-result-by-handle last-sel))
                   (setq item nil))
+                ;; 无上次记录时跳转到第一个匹配结果
+                (if (not item)
+                  (if (and *wtf-results* (> (length *wtf-results*) 0))
+                    (setq item (nth 0 *wtf-results*))
+                  )
+                )
                 (if item
                   (progn
                     (wtf:zoom-to-text item)
+                    ;; 记录当前关键词的最后选择(保存实体句柄)
+                    (wtf:save-selection search-text (nth 4 item))
+                    ;; 保存数据到图纸
+                    (wtf:save-data)
                     ;; 等待按键(启用标记时可输入数字打标记)
                     (setq key-result (wtf:wait-for-key search-text))
                     (if (eq key-result 'exit)
