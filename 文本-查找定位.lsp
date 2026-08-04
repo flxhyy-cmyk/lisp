@@ -120,12 +120,13 @@
   (write-line "        alignment = centered;" f)
   (write-line "      }" f)
   (write-line "      spacer_1;" f)
-  (write-line "      : row {" f)
-  (write-line (strcat "        : button { key = \"btn_locate\"; label = \"定位 1/"
+      (write-line "      : row {" f)
+      (write-line (strcat "        : button { key = \"btn_locate\"; label = \"定位 1/"
                       (itoa *wtf-zoom-denominator*)
                       "\"; width = 14; }") f)
-  (write-line "        : button { key = \"btn_exit\"; label = \"退出\"; width = 12; is_cancel = true; }" f)
-  (write-line "      }" f)
+      (write-line "        : button { key = \"btn_view_all\"; label = \"看全部\"; width = 14; }" f)
+      (write-line "        : button { key = \"btn_exit\"; label = \"退出\"; width = 12; is_cancel = true; }" f)
+      (write-line "      }" f)
   (write-line "    }" f)
   (write-line "  }" f)
   ;; 底部状态条: 显示选中关键词的完整标记信息(横跨整个对话框底部)
@@ -329,22 +330,41 @@
   out
 )
 
-;; 生成列表显示行
-(defun wtf:make-display-line (item / content x y)
+;; 搜索结果排序: Y值从大到小，X值从小到大
+(defun wtf:sort-results (results / )
+  (vl-sort results
+    (function
+      (lambda (a b)
+        (cond
+          ;; Y值不同: 从大到小
+          ((> (nth 2 a) (nth 2 b)) T)
+          ((< (nth 2 a) (nth 2 b)) nil)
+          ;; Y值相同: X值从小到大
+          (T (< (nth 1 a) (nth 1 b)))
+        )
+      )
+    )
+  )
+)
+
+;; 生成列表显示行 (idx 为结果序号，从1开始)
+(defun wtf:make-display-line (idx item / content x y)
   (setq content (nth 0 item))
   (setq x (nth 1 item))
   (setq y (nth 2 item))
   (if (> (strlen content) 45)
     (setq content (strcat (substr content 1 42) "..."))
   )
-  (strcat content "  |  (" (rtos x 2 1) ", " (rtos y 2 1) ")")
+  (strcat (itoa idx) ". " content "  |  (" (rtos x 2 1) ", " (rtos y 2 1) ")")
 )
 
-;; 更新列表框显示
-(defun wtf:update-list ( / )
+;; 更新列表框显示 (带序号)
+(defun wtf:update-list ( / idx)
+  (setq idx 1)
   (start_list "result_list")
   (foreach item *wtf-results*
-    (add_list (wtf:make-display-line item))
+    (add_list (wtf:make-display-line idx item))
+    (setq idx (1+ idx))
   )
   (end_list)
 )
@@ -1057,6 +1077,9 @@
     )
   )
 
+  ;; 按坐标排序: Y值从大到小，X值从小到大
+  (setq *wtf-results* (wtf:sort-results *wtf-results*))
+
   *wtf-results*
 )
 
@@ -1067,6 +1090,17 @@
 (setq *wtf-indicator-top* nil)    ; 上圆实体列表(文本中央上方)
 (setq *wtf-indicator-bottom* nil) ; 下圆实体列表(文本中央下方)
 (setq *wtf-indicator-toggle* nil) ; 颜色互换状态
+
+;; 看全部功能相关全局变量
+(setq *wtf-view-all-ents* nil)      ; 所有结果的实心圆实体列表
+(setq *wtf-view-all-front* nil)     ; 所有结果的前(左)圆实体列表
+(setq *wtf-view-all-back* nil)      ; 所有结果的后(右)圆实体列表
+(setq *wtf-view-all-top* nil)       ; 所有结果的上圆实体列表
+(setq *wtf-view-all-bottom* nil)    ; 所有结果的下圆实体列表
+(setq *wtf-view-all-toggle* nil)    ; 颜色互换状态
+(setq *wtf-view-all-idx* 0)         ; 当前显示的结果索引
+(setq *wtf-view-all-selected* nil)  ; 用户选择的结果(item)
+(setq *wtf-view-all-seq-ent* nil)   ; 序号文字实体(看全部时显示当前序号)
 
 ;; 给实体设置颜色(无62组则追加)，并立即刷新显示
 (defun wtf:set-color (e col / ed)
@@ -1238,10 +1272,324 @@
   (princ)
 )
 
+;; 删除看全部功能的所有实心圆(若存在)
+(defun wtf:erase-view-all ()
+  (if *wtf-view-all-ents*
+    (foreach e *wtf-view-all-ents*
+      (if (and e (entget e))
+        (entdel e)
+      )
+    )
+  )
+  ;; 删除序号文字实体
+  (if (and *wtf-view-all-seq-ent* (entget *wtf-view-all-seq-ent*))
+    (entdel *wtf-view-all-seq-ent*)
+  )
+  (setq *wtf-view-all-ents* nil)
+  (setq *wtf-view-all-front* nil)
+  (setq *wtf-view-all-back* nil)
+  (setq *wtf-view-all-top* nil)
+  (setq *wtf-view-all-bottom* nil)
+  (setq *wtf-view-all-toggle* nil)
+  (setq *wtf-view-all-seq-ent* nil)
+  (princ)
+)
+
+;; 为单个实体绘制实心圆(看全部功能使用)
+(defun wtf:draw-indicator-for-item (ent height / obj result minpt maxpt radius cx cy cxmid cy1 cy2 before e px py dx dy ed)
+  (setq before (entlast))
+  (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
+  (if (not (vl-catch-all-error-p obj))
+    (progn
+      (setq result (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
+      (if (not (vl-catch-all-error-p result))
+        (progn
+          (setq minpt (vlax-safearray->list minpt))
+          (setq maxpt (vlax-safearray->list maxpt))
+          (setq radius (/ (float height) 2.0))
+          (if (or (null radius) (<= radius 0.0))
+            (setq radius 2.5)
+          )
+          (setq cxmid (/ (+ (car minpt) (car maxpt)) 2.0))
+          (setq cy (/ (+ (cadr minpt) (cadr maxpt)) 2.0))
+          ;; 前后圆：左右各一(垂直居中)；上下圆：中央上/下各一
+          (setq cx1 (- (car minpt) (* radius 2.0)))
+          (setq cx2 (+ (car maxpt) (* radius 2.0)))
+          (setq cy1 (+ (cadr maxpt) (* radius 2.0)))
+          (setq cy2 (- (cadr minpt) (* radius 2.0)))
+          ;; 用 DONUT(内径0)画四个实心圆
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cx1 cy 0.0) "")
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cx2 cy 0.0) "")
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cxmid cy1 0.0) "")
+          (command "_.DONUT" 0.0 (* radius 2.0) "_non" (list cxmid cy2 0.0) "")
+          ;; 收集 before 之后新建的全部实体(可能不止一个)
+          (setq e (entnext before))
+          (while e
+            ;; 添加到全局列表
+            (setq *wtf-view-all-ents* (cons e *wtf-view-all-ents*))
+            ;; 按位置划分四组
+            (if (and e (setq ed (entget e)))
+              (progn
+                (setq px (car (cdr (assoc 10 ed))))
+                (setq py (cadr (cdr (assoc 10 ed))))
+                (setq dx (abs (- px cxmid)))
+                (setq dy (abs (- py cy)))
+                (cond
+                  ((>= dx dy)
+                    (if (< px cxmid)
+                      (setq *wtf-view-all-front* (cons e *wtf-view-all-front*))
+                      (setq *wtf-view-all-back* (cons e *wtf-view-all-back*))
+                    )
+                  )
+                  (T
+                    (if (> py cy)
+                      (setq *wtf-view-all-top* (cons e *wtf-view-all-top*))
+                      (setq *wtf-view-all-bottom* (cons e *wtf-view-all-bottom*))
+                    )
+                  )
+                )
+              )
+            )
+            (if (equal e (entlast))
+              (setq e nil)
+              (setq e (entnext e))
+            )
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+;; 看全部功能: 缩放笼罩所有结果，空格逐个展示，右键确定选择
+(defun wtf:view-all-results ( / item ent height result flash-t input done char
+                                 idx cnt all-minpt all-maxpt minpt maxpt obj
+                                 center target-size cur-item cur-ent)
+  ;; 清除之前的实心圆
+  (wtf:erase-view-all)
+  (setq *wtf-view-all-selected* nil)
+  
+  ;; 检查是否有结果
+  (if (null *wtf-results*)
+    (progn
+      (princ "\n[WTF] 没有搜索结果，请先执行查找")
+      (princ)
+    )
+    (progn
+      (setq cnt (length *wtf-results*))
+      
+      ;; 计算所有结果的总边界框，缩放笼罩所有结果
+      (setq all-minpt nil)
+      (setq all-maxpt nil)
+      (foreach item *wtf-results*
+        (setq ent (nth 4 item))
+        (if ent
+          (progn
+            (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
+            (if (not (vl-catch-all-error-p obj))
+              (progn
+                (setq result (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
+                (if (not (vl-catch-all-error-p result))
+                  (progn
+                    (setq minpt (vlax-safearray->list minpt))
+                    (setq maxpt (vlax-safearray->list maxpt))
+                    ;; 更新总边界框
+                    (if (null all-minpt)
+                      (progn
+                        (setq all-minpt (list (car minpt) (cadr minpt) 0.0))
+                        (setq all-maxpt (list (car maxpt) (cadr maxpt) 0.0))
+                      )
+                      (progn
+                        (if (< (car minpt) (car all-minpt)) (setq all-minpt (list (car minpt) (cadr all-minpt) 0.0)))
+                        (if (< (cadr minpt) (cadr all-minpt)) (setq all-minpt (list (car all-minpt) (cadr minpt) 0.0)))
+                        (if (> (car maxpt) (car all-maxpt)) (setq all-maxpt (list (car maxpt) (cadr all-maxpt) 0.0)))
+                        (if (> (cadr maxpt) (cadr all-maxpt)) (setq all-maxpt (list (car all-maxpt) (cadr maxpt) 0.0)))
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+      
+      ;; 遍历所有结果，为每个结果绘制实心圆
+      (foreach item *wtf-results*
+        (setq ent (nth 4 item))
+        (if ent
+          (progn
+            ;; 获取文字高度
+            (setq height (cdr (assoc 40 (entget ent))))
+            (if (or (null height) (<= height 0.01))
+              (setq height 10.0)
+            )
+            ;; 绘制实心圆
+            (wtf:draw-indicator-for-item ent height)
+          )
+        )
+      )
+      
+      ;; 为所有实心圆设置初始颜色：前/上红，后/下绿
+      (foreach e *wtf-view-all-front* (wtf:set-color e 1))
+      (foreach e *wtf-view-all-back* (wtf:set-color e 3))
+      (foreach e *wtf-view-all-top* (wtf:set-color e 1))
+      (foreach e *wtf-view-all-bottom* (wtf:set-color e 3))
+      (setq *wtf-view-all-toggle* nil)
+      
+      ;; 初始化当前索引为0，并缩放到第一项
+      (setq *wtf-view-all-idx* 0)
+      (if (and *wtf-results* (> cnt 0))
+        (progn
+          (setq item (nth 0 *wtf-results*))
+          (wtf:zoom-to-text item 1 cnt)
+          (princ (strcat "\n[WTF] 当前: 1/" (itoa cnt)))
+        )
+      )
+      
+      (princ (strcat "\n[WTF] 已为 " (itoa cnt) " 个结果绘制定位提示圆"))
+      (princ "\n【空格】下一个  【右键】确定选择  【ESC】退出")
+      
+      ;; 等待用户按键
+      (setq flash-t (getvar "MILLISECS"))
+      (setq done nil)
+      (while (not done)
+        ;; 每300ms互换颜色
+        (if (>= (- (getvar "MILLISECS") flash-t) 300)
+          (progn
+            (setq flash-t (getvar "MILLISECS"))
+            ;; 互换颜色
+            (setq *wtf-view-all-toggle* (not *wtf-view-all-toggle*))
+            (if *wtf-view-all-toggle*
+              (progn
+                (foreach e *wtf-view-all-front* (wtf:set-color e 3))
+                (foreach e *wtf-view-all-back* (wtf:set-color e 1))
+                (foreach e *wtf-view-all-top* (wtf:set-color e 3))
+                (foreach e *wtf-view-all-bottom* (wtf:set-color e 1))
+              )
+              (progn
+                (foreach e *wtf-view-all-front* (wtf:set-color e 1))
+                (foreach e *wtf-view-all-back* (wtf:set-color e 3))
+                (foreach e *wtf-view-all-top* (wtf:set-color e 1))
+                (foreach e *wtf-view-all-bottom* (wtf:set-color e 3))
+              )
+            )
+          )
+        )
+        ;; 检测输入
+        (setq input (vl-catch-all-apply 'grread (list T)))
+        (if (vl-catch-all-error-p input)
+          ;; ESC 可能触发错误，视为退出
+          (progn
+            (setq done T)
+            (setq *wtf-view-all-selected* nil)
+          )
+          (cond
+            ;; 鼠标右键点击: 确定当前选择
+            ((= (car input) 25)
+              (progn
+                (setq done T)
+                ;; 保存当前选择的结果
+                (if (and *wtf-results* (>= *wtf-view-all-idx* 0) (< *wtf-view-all-idx* cnt))
+                  (setq *wtf-view-all-selected* (nth *wtf-view-all-idx* *wtf-results*))
+                  (setq *wtf-view-all-selected* nil)
+                )
+              )
+            )
+            ;; 键盘输入
+            ((= (car input) 2)
+              (progn
+                (setq char (cadr input))
+                (cond
+                  ;; 整数类型: 用 ASCII 码判断
+                  ((= (type char) 'INT)
+                    (cond
+                      ((= char 32)  ;; 空格
+                        (progn
+                          ;; 下一个
+                          (setq *wtf-view-all-idx* (1+ *wtf-view-all-idx*))
+                          (if (>= *wtf-view-all-idx* cnt)
+                            (setq *wtf-view-all-idx* 0)
+                          )
+                          ;; 缩放到当前结果
+                          (if (and (>= *wtf-view-all-idx* 0) (< *wtf-view-all-idx* cnt))
+                            (progn
+                              (setq item (nth *wtf-view-all-idx* *wtf-results*))
+                              (wtf:zoom-to-text item (1+ *wtf-view-all-idx*) cnt)
+                              (princ (strcat "\n[WTF] 当前: " (itoa (1+ *wtf-view-all-idx*)) "/" (itoa cnt)))
+                            )
+                          )
+                        )
+                      )
+                      ((= char 27)  ;; ESC
+                        (progn
+                          (setq done T)
+                          (setq *wtf-view-all-selected* nil)
+                        )
+                      )
+                    )
+                  )
+                  ;; 字符串类型: 用字符串比较
+                  ((= (type char) 'STR)
+                    (cond
+                      ((or (= char " ") (= (strcase char) "SPACE"))
+                        (progn
+                          ;; 下一个
+                          (setq *wtf-view-all-idx* (1+ *wtf-view-all-idx*))
+                          (if (>= *wtf-view-all-idx* cnt)
+                            (setq *wtf-view-all-idx* 0)
+                          )
+                          ;; 缩放到当前结果
+                          (if (and (>= *wtf-view-all-idx* 0) (< *wtf-view-all-idx* cnt))
+                            (progn
+                              (setq item (nth *wtf-view-all-idx* *wtf-results*))
+                              (wtf:zoom-to-text item (1+ *wtf-view-all-idx*) cnt)
+                              (princ (strcat "\n[WTF] 当前: " (itoa (1+ *wtf-view-all-idx*)) "/" (itoa cnt)))
+                            )
+                          )
+                        )
+                      )
+                      ((= (strcase char) "ESC")
+                        (progn
+                          (setq done T)
+                          (setq *wtf-view-all-selected* nil)
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+      
+      ;; 删除所有实心圆
+      (wtf:erase-view-all)
+      ;; 删除当前结果的定位圆(由wtf:zoom-to-text中的wtf:draw-indicator绘制)
+      (wtf:erase-indicator)
+      
+      ;; 如果用户选择了结果，建立映射关系并返回
+      (if *wtf-view-all-selected*
+        (progn
+          (princ (strcat "\n[WTF] 已选择: " (nth 0 *wtf-view-all-selected*)))
+          ;; 返回选中的item，由主循环处理映射关系
+          *wtf-view-all-selected*
+        )
+        (progn
+          (princ "\n[WTF] 已退出看全部模式")
+          nil
+        )
+      )
+    )
+  )
+)
+
 ;; ============================================================
 ;;  缩放定位到文字位置（约1/30屏）
 ;; ============================================================
-(defun wtf:zoom-to-text (item / ent obj result minpt maxpt height center target-size bb-width bb-height)
+(defun wtf:zoom-to-text (item seq-num total / ent obj result minpt maxpt height center target-size bb-width bb-height seq-text-hgt seq-text-pos)
   (setq ent (nth 4 item))
 
   (setq center nil)
@@ -1293,6 +1641,39 @@
   (command "_.ZOOM" "_C" "_non" center target-size)
   ;; 定位后在文字前面画实心圆提示，返回时删除
   (wtf:draw-indicator ent height)
+
+  ;; 如果有序号参数，在定位圆顶部区域显示序号文字
+  (if (and seq-num (>= seq-num 1))
+    (progn
+      ;; 先删除之前的序号文字
+      (if (and *wtf-view-all-seq-ent* (entget *wtf-view-all-seq-ent*))
+        (entdel *wtf-view-all-seq-ent*)
+      )
+      (setq *wtf-view-all-seq-ent* nil)
+      ;; 序号文字高度为定位圆直径的1.5倍
+      (setq seq-text-hgt (* height 1.5))
+      ;; 序号文字位置: 定位圆区域顶部(上圆上方)
+      (setq seq-text-pos (list (car center)
+                                (+ (cadr center) (* height 3.0))
+                                0.0))
+      ;; 创建序号文字实体
+      (setq *wtf-view-all-seq-ent*
+        (entmakex
+          (list
+            (cons 0 "TEXT")
+            (cons 10 seq-text-pos)
+            (cons 40 seq-text-hgt)
+            (cons 1 (strcat "[" (itoa seq-num) "/" (itoa total) "]"))
+            (cons 7 (getvar "TEXTSTYLE"))
+            (cons 62 7)  ; 颜色7(白色/黑色)
+            (cons 72 1)  ; 水平对齐: 居中
+            (cons 11 seq-text-pos)
+          )
+        )
+      )
+    )
+  )
+
   (princ)
 )
 
@@ -2097,6 +2478,9 @@
         ;; 点击定位按钮: 返回9，由主循环弹出比例选择对话框(主界面重开重绘按钮标签)
         (action_tile "btn_locate" "(wtf:save-keyword-pos) (done_dialog 9)")
 
+        ;; 点击看全部按钮: 返回10，对所有结果执行定位显示实心圆
+        (action_tile "btn_view_all" "(wtf:save-keyword-pos) (done_dialog 10)")
+
         (action_tile "btn_exit" "(wtf:save-keyword-pos) (done_dialog 0)")
 
         ;; 焦点设到搜索框
@@ -2177,7 +2561,7 @@
                 )
                 (if item
                   (progn
-                    (wtf:zoom-to-text item)
+                    (wtf:zoom-to-text item nil nil)
                     ;; 记录当前关键词的最后选择(保存实体句柄)
                     (wtf:save-selection search-text (nth 4 item))
                     ;; 保存数据到图纸
@@ -2218,7 +2602,7 @@
                 )
                 (if item
                   (progn
-                    (wtf:zoom-to-text item)
+                    (wtf:zoom-to-text item nil nil)
                     ;; 记录当前关键词的最后选择(保存实体句柄)
                     (wtf:save-selection search-text (nth 4 item))
                     ;; 保存数据到图纸
@@ -2245,7 +2629,7 @@
             (if (and *wtf-results* (< sel-idx (length *wtf-results*)))
               (progn
                 (setq item (nth sel-idx *wtf-results*))
-                (wtf:zoom-to-text item)
+                (wtf:zoom-to-text item nil nil)
                 ;; 记录当前关键词的最后选择(保存实体句柄)
                 (wtf:save-selection search-text (nth 4 item))
                 ;; 保存数据到图纸
@@ -2258,6 +2642,20 @@
                 )
               )
               (princ "\n[WTF] 无效的选择")
+            )
+          )
+          ;; 看全部: 对所有结果执行定位，显示实心圆
+          ((= code 10)
+            (setq item (wtf:view-all-results))
+            ;; 如果用户选择了结果，建立映射关系
+            (if item
+              (progn
+                ;; 记录当前关键词的最后选择(保存实体句柄)
+                (wtf:save-selection search-text (nth 4 item))
+                ;; 保存数据到图纸
+                (wtf:save-data)
+                (princ (strcat "\n[WTF] 已将【" search-text "】映射到选择的结果"))
+              )
             )
           )
         )
