@@ -155,9 +155,9 @@
   (setq f (open dcl-file "w"))
   
   (write-line "wwe_transformer : dialog {" f)
-  (write-line "  label = \"Ñ¡   Ñ¹  \";" f)
+  (write-line "  label = \"Ñ¡Ôñ±äÑ¹Æ÷\";" f)
   (write-line "  : boxed_column {" f)
-  (write-line "    label = \"  Ñ¹   Ð± \";" f)
+  (write-line "    label = \"±äÑ¹Æ÷ÁÐ±í\";" f)
   (write-line "    : list_box {" f)
   (write-line "      key = \"transformer_list\";" f)
   (write-line "      width = 40;" f)
@@ -171,14 +171,14 @@
   (write-line "    alignment = centered;" f)
   (write-line "    : button {" f)
   (write-line "      key = \"accept\";" f)
-  (write-line "      label = \"È·  \";" f)
+  (write-line "      label = \"È·¶¨\";" f)
   (write-line "      width = 12;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "      is_default = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"cancel\";" f)
-  (write-line "      label = \"È¡  \";" f)
+  (write-line "      label = \"È¡Ïû\";" f)
   (write-line "      width = 12;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "      is_cancel = true;" f)
@@ -258,10 +258,10 @@
   (setq dcl-file (strcat (getenv "TEMP") "\\wwe_dialog.dcl"))
   (setq f (open dcl-file "w"))
   (write-line "wwe_dialog : dialog {" f)
-  (write-line "  label = \" Ä± Ñ¡ ñ¹¤¾  -  Ð± à¼­  \";" f)
+  (write-line "  label = \"ÎÄ±¾Ñ¡Ôñ¹¤¾ß - ÎÄ±¾±à¼­\";" f)
   (write-line "  : row {" f)
   (write-line "    : boxed_column {" f)
-  (write-line "      label = \"  Ñ¹   Ð± \";" f)
+  (write-line "      label = \"±äÑ¹Æ÷ÁÐ±í\";" f)
   (write-line "      : list_box {" f)
   (write-line "        key = \"transformer_list\";" f)
   (write-line "        width = 25;" f)
@@ -271,11 +271,11 @@
   (write-line "    }" f)
   (write-line "    : column {" f)
   (write-line "      : text {" f)
-  (write-line "        label = \" Ä±    Ý£ Ã¿ Ð¿É±à¼­\";" f)
+  (write-line "        label = \"ÎÄ±¾ÄÚÈÝ¿ÉÔÚ´Ë±à¼­\";" f)
   (write-line "      }" f)
   (write-line "      : text {" f)
   (write-line "        key = \"info_label\";" f)
-  (write-line "        label = \"Î´Ñ¡   Ñ¹  \";" f)
+  (write-line "        label = \"Î´Ñ¡Ôñ±äÑ¹Æ÷\";" f)
   (write-line "        alignment = left;" f)
   (write-line "      }" f)
   (write-line "      : column {" f)
@@ -323,31 +323,31 @@
   (write-line "    alignment = centered;" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_extend\";" f)
-  (write-line "      label = \"    Â·  \";" f)
+  (write-line "      label = \"ÖØÉèÂ·¾¶\";" f)
   (write-line "      width = 8;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_copy\";" f)
-  (write-line "      label = \"    \";" f)
+  (write-line "      label = \"¸´ÖÆ\";" f)
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_paste\";" f)
-  (write-line "      label = \"Õ³  \";" f)
+  (write-line "      label = \"Õ³Ìù\";" f)
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_swap\";" f)
-  (write-line "      label = \"    \";" f)
+  (write-line "      label = \"½»»»\";" f)
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_add_numbers\";" f)
-  (write-line "      label = \" Ó±  \";" f)
+  (write-line "      label = \"¼Ó±àºÅ\";" f)
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
@@ -359,27 +359,27 @@
   (write-line "    alignment = centered;" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_write\";" f)
-  (write-line "      label = \"Ð´  CAD\";" f)
+  (write-line "      label = \"Ð´ÈëCAD\";" f)
   (write-line "      width = 8;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_pick\";" f)
-  (write-line "      label = \"Ñ¡     Ä± \";" f)
+  (write-line "      label = \"Ñ¡ÔñÐÂÎÄ±¾\";" f)
   (write-line "      width = 8;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   ;; Text height edit box: auto-shows recorded height, remembers last change
   (write-line "    : edit_box {" f)
   (write-line "      key = \"eb_height\";" f)
-  (write-line "      label = \" Ö¸ :\";" f)
+  (write-line "      label = \"×Ö¸ß:\";" f)
   (write-line "      width = 12;" f)
   (write-line "      edit_width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "    }" f)
   (write-line "    : button {" f)
   (write-line "      key = \"btn_ok\";" f)
-  (write-line "      label = \"È·  \";" f)
+  (write-line "      label = \"È·¶¨\";" f)
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "      is_default = true;" f)
@@ -387,7 +387,7 @@
   ;; Visible cancel button: also handles ESC / close-X cancel
   (write-line "    : button {" f)
   (write-line "      key = \"btn_cancel\";" f)
-  (write-line "      label = \"È¡  \";" f)
+  (write-line "      label = \"È¡Ïû\";" f)
   (write-line "      width = 6;" f)
   (write-line "      fixed_width = true;" f)
   (write-line "      is_cancel = true;" f)
@@ -446,7 +446,7 @@
   )
 )
 
-;;      îº¯  
+;; Main command entry
 (defun c:WWD ()
   (setq text-data nil)
   (setq result-list nil)
@@ -1121,10 +1121,10 @@
           ;; Update info label if transformer is selected
           (if *wwe-selected-transformer*
             (set_tile "info_label" 
-              (strcat (car *wwe-selected-transformer*) "    Ñ¹     î¶¨      " 
-                      (cadr *wwe-selected-transformer*) "A   î¶¨  Ñ¹  " 
+              (strcat (car *wwe-selected-transformer*) " ±äÑ¹Æ÷²ÎÊý: ¶î¶¨µçÁ÷: " 
+                      (cadr *wwe-selected-transformer*) "A ¶î¶¨µçÑ¹: " 
                       (caddr *wwe-selected-transformer*) "A"))
-            (set_tile "info_label" "Î´Ñ¡   Ñ¹  ")
+            (set_tile "info_label" "Î´Ñ¡Ôñ±äÑ¹Æ÷")
           )
           
           ;; Add action callbacks for each checkbox to highlight edit box and control selection limit
@@ -1171,8 +1171,8 @@
               "      (if (>= row-count 2) (set_tile \"line_1\" (nth 5 *wwe-selected-transformer*))) "
               "      (if (>= row-count 3) (set_tile \"line_2\" (nth 3 *wwe-selected-transformer*))) "
               "      (set_tile \"info_label\" "
-              "        (strcat (car *wwe-selected-transformer*) \"    Ñ¹     î¶¨      \" "
-              "                (cadr *wwe-selected-transformer*) \"A   î¶¨  Ñ¹  \" "
+              "        (strcat (car *wwe-selected-transformer*) \" ±äÑ¹Æ÷²ÎÊý: ¶î¶¨µçÁ÷: \" "
+              "                (cadr *wwe-selected-transformer*) \"A ¶î¶¨µçÑ¹: \" "
               "                (caddr *wwe-selected-transformer*) \"A\")) "
               "    ) "
               "  ) "
@@ -1507,7 +1507,7 @@
              )
              
              ;; Prompt user to select new CSV file
-             (setq csv-file-obj (getfiled "Ñ¡   Ñ¹     Ý±  " "" "csv" 8))
+             (setq csv-file-obj (getfiled "Ñ¡Ôñ±äÑ¹Æ÷Êý¾ÝÎÄ¼þ" "" "csv" 8))
              (if csv-file-obj
                (progn
                  ;; Save to registry

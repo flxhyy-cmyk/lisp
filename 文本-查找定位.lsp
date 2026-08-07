@@ -1,6 +1,6 @@
 ;@name 查找定位文本
 ;@group 文本编辑
-;@desc 查找图纸中的文字并快速定位。支持全图查找和框选范围查找，点击结果可缩放定位到文字位置(约1/30屏)，按空格返回列表，按ESC退出。全图查找支持缓存加速，支持从剪贴板批量导入关键词。支持自定义标记：定位时按数字键给关键词打标记，并可按标记统计和复制关键词
+;@desc 查找图纸中的文字并快速定位。支持全图查找和框选范围查找，点击结果可缩放定位到文字位置(约1/30屏)，按空格返回列表，按ESC退出。全图查找支持缓存加速，支持从剪贴板批量导入关键词。支持自定义标记：定位时按数字键给关键词打标记，并可按标记统计和复制关键词。支持双关联：开启后每个关键词可关联最多2个目标，定位时按空格在两目标间来回切换、右键返回，看全部时按鼠标左键定义关联目标
 ;@require ModelSpace
 ;@require Selection
 
@@ -22,6 +22,11 @@
 (setq *wtf-keyword-list* nil)
 ;; 关键词到最后选择匹配项句柄的映射(关联列表: (("关键词" . "句柄") ...))
 (setq *wtf-last-selection* nil)
+;; 双关联开关("1"=启用 "0"=关闭)，启用时一个关键词可关联最多2个目标
+(setq *wtf-dual-enabled* "0")
+;; 双关联映射: (("关键词" 句柄1 句柄2 最后停留序号) ...)
+;; 句柄2可为nil(仅1个目标)；最后停留序号 1或2(0=尚未定位过，默认从目标1开始)
+(setq *wtf-dual-selection* nil)
 ;; 关键词列表滚动位置(上次选中索引，用于恢复滚动位置)
 (setq *wtf-keyword-top-idx* "")
 ;; 标记定义列表(每项为标记名称字符串，最多9个)
@@ -40,7 +45,7 @@
 (setq *wtf-stat-last-sel* nil)
 ;; 关键词到数量的映射(关联列表: (("关键词" . "数量") ...)，由数量定义功能写入)
 (setq *wtf-keyword-qty* nil)
-;; 备份列表: ((备份名 关键词列表 标记定义 标记开关 标记映射 数量映射 上次搜索 位置映射 滚动位置) ...)
+;; 备份列表: ((备份名 关键词列表 标记定义 标记开关 标记映射 数量映射 上次搜索 位置映射 滚动位置 双关联映射) ...)
 ;; 备份名用关键词数量命名，如 "15个关键词"
 (setq *wtf-backups* nil)
 ;; 定位缩放比例分母(文字约占屏1/N)，默认1/30，可在主界面点击"定位"按钮从预设值中修改
@@ -92,6 +97,7 @@
   (write-line "        : radio_button { key = \"rb_all\"; label = \"全图查找\"; }" f)
   (write-line "        : radio_button { key = \"rb_window\"; label = \"框选范围查找\"; }" f)
   (write-line "        : toggle { key = \"tg_mark_enable\"; label = \"启用标记\"; }" f)
+  (write-line "        : toggle { key = \"tg_dual_link\"; label = \"双关联\"; }" f)
   (write-line "      }" f)
   (write-line "      : row {" f)
   (write-line "        : button {" f)
@@ -669,7 +675,8 @@
       (setq new-list (append new-list
         (list (list name *wtf-keyword-list* *wtf-mark-defs* *wtf-mark-enabled*
                     *wtf-keyword-marks* *wtf-keyword-qty* *wtf-last-search*
-                    *wtf-last-selection* *wtf-keyword-top-idx*))))
+                    *wtf-last-selection* *wtf-keyword-top-idx*
+                    *wtf-dual-selection*))))
       (setq *wtf-backups* new-list)
       (princ (strcat "\n[WTF] 已备份当前数据: " name))
       T
@@ -705,8 +712,11 @@
       (setq *wtf-last-search* (nth 6 item))
       (setq *wtf-last-selection* (nth 7 item))
       (setq *wtf-keyword-top-idx* (nth 8 item))
+      ;; 双关联映射(第10个字段，旧备份无此字段时为nil)
+      (setq *wtf-dual-selection* (nth 9 item))
       (if (null *wtf-last-selection*) (setq *wtf-last-selection* nil))
       (if (null *wtf-keyword-top-idx*) (setq *wtf-keyword-top-idx* ""))
+      (if (null *wtf-dual-selection*) (setq *wtf-dual-selection* nil))
       (princ (strcat "\n[WTF] 已恢复备份数据: " name))
       T
     )
@@ -733,7 +743,7 @@
             (setq new-list (append new-list
               (list (list name (nth 1 item) (nth 2 item) (nth 3 item)
                           *wtf-keyword-marks* *wtf-keyword-qty* (nth 6 item)
-                          (nth 7 item) (nth 8 item)))))
+                          (nth 7 item) (nth 8 item) (nth 9 item)))))
           )
           (setq new-list (append new-list (list item)))
         )
@@ -866,6 +876,89 @@
 )
 
 ;; ============================================================
+;;  双关联读写
+;;  双关联映射每项: ("关键词" 句柄1 句柄2 最后停留序号)
+;;  句柄2可为nil(仅1个目标)；最后停留序号 1或2(0=尚未定位过)
+;; ============================================================
+;; 获取关键词的双关联记录: 返回 (句柄1 句柄2 最后停留序号)，无记录返回 nil
+(defun wtf:get-dual-selection (keyword / pair)
+  (setq pair (assoc keyword *wtf-dual-selection*))
+  (if pair (cdr pair) nil)
+)
+
+;; 将目标句柄加入双关联记录(FIFO最多2个，第3个自动替换较早记住的)
+;; 已关联过的目标仅更新最后停留序号，不重复添加
+;; 返回新的记录列表 (句柄1 句柄2 最后停留序号)
+(defun wtf:dual-add (keyword handle / rec h1 h2 last-idx new-rec)
+  (if (and handle (/= handle ""))
+    (progn
+      (setq rec (wtf:get-dual-selection keyword))
+      (if rec
+        (progn
+          (setq h1 (nth 0 rec))
+          (setq h2 (nth 1 rec))
+          (setq last-idx (nth 2 rec))
+          (cond
+            ((= handle h1) (setq last-idx 1))
+            ((and h2 (= handle h2)) (setq last-idx 2))
+            ((null h2)
+              ;; 仅1个目标，追加为第2个
+              (setq h2 handle)
+              (setq last-idx 2)
+            )
+            (t
+              ;; 已有2个目标，替换较早记住的(句柄1)，新目标作为最后
+              (setq h1 h2)
+              (setq h2 handle)
+              (setq last-idx 2)
+            )
+          )
+          (setq new-rec (list h1 h2 last-idx))
+        )
+        (setq new-rec (list handle nil 1))
+      )
+      ;; 写回映射(替换同名关键词的旧记录)
+      (setq *wtf-dual-selection*
+        (append (vl-remove-if '(lambda (p) (= (car p) keyword)) *wtf-dual-selection*)
+                (list (cons keyword new-rec))))
+      new-rec
+    )
+    nil
+  )
+)
+
+;; 更新关键词双关联的最后停留目标序号(1或2)
+(defun wtf:dual-set-last (keyword last-idx / rec)
+  (setq rec (wtf:get-dual-selection keyword))
+  (if rec
+    (progn
+      (setq rec (list (nth 0 rec) (nth 1 rec) last-idx))
+      (setq *wtf-dual-selection*
+        (append (vl-remove-if '(lambda (p) (= (car p) keyword)) *wtf-dual-selection*)
+                (list (cons keyword rec))))
+    )
+  )
+)
+
+;; 按句柄查找实体并构造定位item (文字内容 X Y Z 实体名)
+;; 实体已删除或句柄无效时返回 nil
+(defun wtf:dual-find-item (handle / ent content ins-pt)
+  (if (and handle (/= handle ""))
+    (progn
+      (setq ent (handent handle))
+      (if (and ent (entget ent))
+        (progn
+          (setq content (wtf:get-text-content ent))
+          (setq ins-pt (cdr (assoc 10 (entget ent))))
+          (list content (car ins-pt) (cadr ins-pt) (caddr ins-pt) ent))
+        nil
+      )
+    )
+    nil
+  )
+)
+
+;; ============================================================
 ;;  数据持久化 (存储到图纸字典，随DWG保存)
 ;; ============================================================
 
@@ -891,6 +984,8 @@
     (progn
       (vlax-ldata-put dict "keyword-list" *wtf-keyword-list*)
       (vlax-ldata-put dict "last-selection" *wtf-last-selection*)
+      (vlax-ldata-put dict "dual-enabled" *wtf-dual-enabled*)
+      (vlax-ldata-put dict "dual-selection" *wtf-dual-selection*)
       (vlax-ldata-put dict "last-search" *wtf-last-search*)
       (vlax-ldata-put dict "keyword-top-idx" *wtf-keyword-top-idx*)
       (vlax-ldata-put dict "mark-defs" *wtf-mark-defs*)
@@ -910,6 +1005,8 @@
     (progn
       (setq *wtf-keyword-list* (vlax-ldata-get dict "keyword-list" nil))
       (setq *wtf-last-selection* (vlax-ldata-get dict "last-selection" nil))
+      (setq *wtf-dual-enabled* (vlax-ldata-get dict "dual-enabled" "0"))
+      (setq *wtf-dual-selection* (vlax-ldata-get dict "dual-selection" nil))
       (setq *wtf-last-search* (vlax-ldata-get dict "last-search" ""))
       (setq *wtf-keyword-top-idx* (vlax-ldata-get dict "keyword-top-idx" ""))
       (setq *wtf-mark-defs* (vlax-ldata-get dict "mark-defs" nil))
@@ -920,6 +1017,8 @@
       (setq *wtf-zoom-denominator* (vlax-ldata-get dict "zoom-denominator" 30))
       (if (null *wtf-keyword-list*) (setq *wtf-keyword-list* nil))
       (if (null *wtf-last-selection*) (setq *wtf-last-selection* nil))
+      (if (null *wtf-dual-enabled*) (setq *wtf-dual-enabled* "0"))
+      (if (null *wtf-dual-selection*) (setq *wtf-dual-selection* nil))
       (if (null *wtf-last-search*) (setq *wtf-last-search* ""))
       (if (null *wtf-keyword-top-idx*) (setq *wtf-keyword-top-idx* ""))
       (if (null *wtf-mark-enabled*) (setq *wtf-mark-enabled* "0"))
@@ -948,6 +1047,8 @@
   )
   (setq *wtf-keyword-list* nil)
   (setq *wtf-last-selection* nil)
+  (setq *wtf-dual-enabled* "0")
+  (setq *wtf-dual-selection* nil)
   (setq *wtf-last-search* "")
   (setq *wtf-keyword-top-idx* "")
   (setq *wtf-mark-defs* nil)
@@ -1092,6 +1193,8 @@
 (setq *wtf-indicator-toggle* nil) ; 颜色互换状态
 
 ;; 看全部功能相关全局变量
+;; 注意: 2026-08-06起看全部只对当前查看的目标绘制定位圆(红绿闪烁)，
+;; 不再为所有结果批量画圆，以下 *wtf-view-all-* 系列保留仅为兼容(不再填充)
 (setq *wtf-view-all-ents* nil)      ; 所有结果的实心圆实体列表
 (setq *wtf-view-all-front* nil)     ; 所有结果的前(左)圆实体列表
 (setq *wtf-view-all-back* nil)      ; 所有结果的后(右)圆实体列表
@@ -1163,9 +1266,14 @@
       (setq result (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
       (if (not (vl-catch-all-error-p result))
         (progn
-          (setq minpt (vlax-safearray->list minpt))
-          (setq maxpt (vlax-safearray->list maxpt))
-          (setq radius (/ (float height) 2.0))
+          ;; 输出参数可能未被赋值(异常实体)，安全转换避免 consp nil 错误
+          (setq minpt (vl-catch-all-apply 'vlax-safearray->list (list minpt)))
+          (if (vl-catch-all-error-p minpt) (setq minpt nil))
+          (setq maxpt (vl-catch-all-apply 'vlax-safearray->list (list maxpt)))
+          (if (vl-catch-all-error-p maxpt) (setq maxpt nil))
+          (if (and minpt maxpt)
+            (progn
+              (setq radius (/ (float height) 2.0))
           (if (or (null radius) (<= radius 0.0))
             (setq radius 2.5)
           )
@@ -1227,6 +1335,8 @@
           (foreach e *wtf-indicator-top* (wtf:set-color e 1))
           (foreach e *wtf-indicator-bottom* (wtf:set-color e 3))
           (setq *wtf-indicator-toggle* nil)
+            )
+          )
         )
       )
     )
@@ -1362,13 +1472,15 @@
   (princ)
 )
 
-;; 看全部功能: 缩放笼罩所有结果，空格逐个展示，右键确定选择
-(defun wtf:view-all-results ( / item ent height result flash-t input done char
-                                 idx cnt all-minpt all-maxpt minpt maxpt obj
-                                 center target-size cur-item cur-ent)
+;; 看全部功能: 缩放笼罩所有结果，空格逐个展示，右键确定选择/返回
+;; keyword: 当前关键词(双关联开启时用于按Y关联目标，可传nil)
+(defun wtf:view-all-results (keyword / item flash-t input done char
+                                 idx cnt dual-mode d-rec d-cnt)
   ;; 清除之前的实心圆
   (wtf:erase-view-all)
   (setq *wtf-view-all-selected* nil)
+  ;; 双关联模式: 启用开关且提供了当前关键词
+  (setq dual-mode (and (= *wtf-dual-enabled* "1") keyword (/= keyword "")))
   
   ;; 检查是否有结果
   (if (null *wtf-results*)
@@ -1378,65 +1490,9 @@
     )
     (progn
       (setq cnt (length *wtf-results*))
-      
-      ;; 计算所有结果的总边界框，缩放笼罩所有结果
-      (setq all-minpt nil)
-      (setq all-maxpt nil)
-      (foreach item *wtf-results*
-        (setq ent (nth 4 item))
-        (if ent
-          (progn
-            (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
-            (if (not (vl-catch-all-error-p obj))
-              (progn
-                (setq result (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
-                (if (not (vl-catch-all-error-p result))
-                  (progn
-                    (setq minpt (vlax-safearray->list minpt))
-                    (setq maxpt (vlax-safearray->list maxpt))
-                    ;; 更新总边界框
-                    (if (null all-minpt)
-                      (progn
-                        (setq all-minpt (list (car minpt) (cadr minpt) 0.0))
-                        (setq all-maxpt (list (car maxpt) (cadr maxpt) 0.0))
-                      )
-                      (progn
-                        (if (< (car minpt) (car all-minpt)) (setq all-minpt (list (car minpt) (cadr all-minpt) 0.0)))
-                        (if (< (cadr minpt) (cadr all-minpt)) (setq all-minpt (list (car all-minpt) (cadr minpt) 0.0)))
-                        (if (> (car maxpt) (car all-maxpt)) (setq all-maxpt (list (car maxpt) (cadr all-maxpt) 0.0)))
-                        (if (> (cadr maxpt) (cadr all-maxpt)) (setq all-maxpt (list (car all-maxpt) (cadr maxpt) 0.0)))
-                      )
-                    )
-                  )
-                )
-              )
-            )
-          )
-        )
-      )
-      
-      ;; 遍历所有结果，为每个结果绘制实心圆
-      (foreach item *wtf-results*
-        (setq ent (nth 4 item))
-        (if ent
-          (progn
-            ;; 获取文字高度
-            (setq height (cdr (assoc 40 (entget ent))))
-            (if (or (null height) (<= height 0.01))
-              (setq height 10.0)
-            )
-            ;; 绘制实心圆
-            (wtf:draw-indicator-for-item ent height)
-          )
-        )
-      )
-      
-      ;; 为所有实心圆设置初始颜色：前/上红，后/下绿
-      (foreach e *wtf-view-all-front* (wtf:set-color e 1))
-      (foreach e *wtf-view-all-back* (wtf:set-color e 3))
-      (foreach e *wtf-view-all-top* (wtf:set-color e 1))
-      (foreach e *wtf-view-all-bottom* (wtf:set-color e 3))
-      (setq *wtf-view-all-toggle* nil)
+
+      ;; 只对当前查看的目标绘制定位提示圆(由wtf:zoom-to-text内部绘制)，
+      ;; 其他非当前目标不画圆，避免全部目标都被红绿圆标记
       
       ;; 初始化当前索引为0，并缩放到第一项
       (setq *wtf-view-all-idx* 0)
@@ -1448,33 +1504,21 @@
         )
       )
       
-      (princ (strcat "\n[WTF] 已为 " (itoa cnt) " 个结果绘制定位提示圆"))
-      (princ "\n【空格】下一个  【右键】确定选择  【ESC】退出")
+      (princ (strcat "\n[WTF] 共 " (itoa cnt) " 个结果，空格逐个查看"))
+      (if dual-mode
+        (princ "\n【空格】下一个  【左键】关联当前目标  【右键】返回  【ESC】退出")
+        (princ "\n【空格】下一个  【右键】确定选择  【ESC】退出")
+      )
       
       ;; 等待用户按键
       (setq flash-t (getvar "MILLISECS"))
       (setq done nil)
       (while (not done)
-        ;; 每300ms互换颜色
+        ;; 每300ms互换当前目标定位圆的颜色(红绿闪烁)
         (if (>= (- (getvar "MILLISECS") flash-t) 300)
           (progn
             (setq flash-t (getvar "MILLISECS"))
-            ;; 互换颜色
-            (setq *wtf-view-all-toggle* (not *wtf-view-all-toggle*))
-            (if *wtf-view-all-toggle*
-              (progn
-                (foreach e *wtf-view-all-front* (wtf:set-color e 3))
-                (foreach e *wtf-view-all-back* (wtf:set-color e 1))
-                (foreach e *wtf-view-all-top* (wtf:set-color e 3))
-                (foreach e *wtf-view-all-bottom* (wtf:set-color e 1))
-              )
-              (progn
-                (foreach e *wtf-view-all-front* (wtf:set-color e 1))
-                (foreach e *wtf-view-all-back* (wtf:set-color e 3))
-                (foreach e *wtf-view-all-top* (wtf:set-color e 1))
-                (foreach e *wtf-view-all-bottom* (wtf:set-color e 3))
-              )
-            )
+            (wtf:swap-indicator-colors)
           )
         )
         ;; 检测输入
@@ -1486,14 +1530,43 @@
             (setq *wtf-view-all-selected* nil)
           )
           (cond
-            ;; 鼠标右键点击: 确定当前选择
+            ;; 鼠标左键: 双关联模式关联当前目标(点击任意位置即关联当前显示的结果)
+            ((= (car input) 3)
+              (if dual-mode
+                (progn
+                  (if (and *wtf-results* (>= *wtf-view-all-idx* 0) (< *wtf-view-all-idx* cnt))
+                    (progn
+                      (setq item (nth *wtf-view-all-idx* *wtf-results*))
+                      (setq d-rec (wtf:dual-add keyword
+                        (cdr (assoc 5 (entget (nth 4 item))))))
+                      (if d-rec
+                        (progn
+                          (wtf:save-data)
+                          (wtf:sync-backup-marks)
+                          (setq d-cnt (if (nth 1 d-rec) 2 1))
+                          (princ (strcat "\n[WTF] 已将当前目标关联到【" keyword
+                                         "】(共 " (itoa d-cnt) "/2 个)"))
+                        )
+                      )
+                    )
+                  )
+                )
+                ;; 非双关联模式: 左键不响应
+                nil
+              )
+            )
+            ;; 鼠标右键: 双关联模式返回界面，否则确定当前选择
             ((= (car input) 25)
               (progn
                 (setq done T)
-                ;; 保存当前选择的结果
-                (if (and *wtf-results* (>= *wtf-view-all-idx* 0) (< *wtf-view-all-idx* cnt))
-                  (setq *wtf-view-all-selected* (nth *wtf-view-all-idx* *wtf-results*))
+                (if dual-mode
+                  ;; 双关联模式: 右键=返回(不选择、不关联)
                   (setq *wtf-view-all-selected* nil)
+                  ;; 保存当前选择的结果
+                  (if (and *wtf-results* (>= *wtf-view-all-idx* 0) (< *wtf-view-all-idx* cnt))
+                    (setq *wtf-view-all-selected* (nth *wtf-view-all-idx* *wtf-results*))
+                    (setq *wtf-view-all-selected* nil)
+                  )
                 )
               )
             )
@@ -1604,14 +1677,21 @@
       (setq result (vl-catch-all-apply 'vla-getboundingbox (list obj 'minpt 'maxpt)))
       (if (not (vl-catch-all-error-p result))
         (progn
-          (setq minpt (vlax-safearray->list minpt))
-          (setq maxpt (vlax-safearray->list maxpt))
-          (setq center (list (/ (+ (car minpt) (car maxpt)) 2.0)
-                             (/ (+ (cadr minpt) (cadr maxpt)) 2.0)
-                             0.0))
-          ;; 记录边界框宽高(仅用于回退)
-          (setq bb-width (abs (- (car maxpt) (car minpt))))
-          (setq bb-height (abs (- (cadr maxpt) (cadr minpt))))
+          ;; 输出参数可能未被赋值(异常实体)，安全转换避免 consp nil 错误
+          (setq minpt (vl-catch-all-apply 'vlax-safearray->list (list minpt)))
+          (if (vl-catch-all-error-p minpt) (setq minpt nil))
+          (setq maxpt (vl-catch-all-apply 'vlax-safearray->list (list maxpt)))
+          (if (vl-catch-all-error-p maxpt) (setq maxpt nil))
+          (if (and minpt maxpt)
+            (progn
+              (setq center (list (/ (+ (car minpt) (car maxpt)) 2.0)
+                                 (/ (+ (cadr minpt) (cadr maxpt)) 2.0)
+                                 0.0))
+              ;; 记录边界框宽高(仅用于回退)
+              (setq bb-width (abs (- (car maxpt) (car minpt))))
+              (setq bb-height (abs (- (cadr maxpt) (cadr minpt))))
+            )
+          )
         )
       )
     )
@@ -1680,19 +1760,27 @@
 ;; ============================================================
 ;;  等待用户按键：空格/鼠标右键返回，ESC退出
 ;;  启用标记时: 数字键累积输入，空格/鼠标右键/ESC时应用标记(整体替换，0=清除)
+;;  dual-items: 双关联目标item列表(最多2个)，nil表示非双关联模式
+;;  cur-idx: 当前显示目标在dual-items中的索引(0或1)
+;;  双关联模式: 空格在两目标间来回切换，右键返回，ESC退出
 ;;  返回 'back 或 'exit
 ;; ============================================================
-(defun wtf:wait-for-key (keyword / input done char result mark-active digits opts idx cur flash-t)
+(defun wtf:wait-for-key (keyword dual-items cur-idx / input done char result
+                             mark-active digits opts idx cur flash-t d-len d-item)
   (setq done nil)
   (setq result nil)
   (setq digits "")
+  (setq d-len (if dual-items (length dual-items) 0))
   (setq mark-active (and (= *wtf-mark-enabled* "1")
                          *wtf-mark-defs*
                          keyword
                          (/= keyword "")))
 
   (princ "\n[WTF] 已定位到文字")
-  (princ "\n按【空格】或鼠标右键返回列表选择下一个，按【ESC】退出")
+  (if (> d-len 1)
+    (princ "\n按【空格】切换目标，鼠标右键返回列表，按【ESC】退出")
+    (princ "\n按【空格】或鼠标右键返回列表选择下一个，按【ESC】退出")
+  )
   (if mark-active
     (progn
       ;; 显示标记选项(每个选项前带快捷键: 1-9、A-Z)
@@ -1743,8 +1831,27 @@
               ((= (type char) 'INT)
                 (cond
                   ((= char 32)  ;; 空格
-                    (setq result 'back)
-                    (setq done T)
+                    (if (> d-len 1)
+                      ;; 双关联模式: 在两目标间来回切换
+                      (progn
+                        (setq cur-idx (if (= cur-idx 0) 1 0))
+                        (setq d-item (nth cur-idx dual-items))
+                        (if d-item
+                          (progn
+                            (wtf:zoom-to-text d-item nil nil)
+                            (wtf:dual-set-last keyword (1+ cur-idx))
+                            (wtf:save-data)
+                            (wtf:sync-backup-marks)
+                            (princ (strcat "\n[WTF] 已切换到目标 "
+                                           (itoa (1+ cur-idx)) "/" (itoa d-len)))
+                          )
+                        )
+                      )
+                      (progn
+                        (setq result 'back)
+                        (setq done T)
+                      )
+                    )
                   )
                   ((= char 27)  ;; ESC
                     (setq result 'exit)
@@ -1764,8 +1871,27 @@
               ((= (type char) 'STR)
                 (cond
                   ((or (= char " ") (= (strcase char) "SPACE"))
-                    (setq result 'back)
-                    (setq done T)
+                    (if (> d-len 1)
+                      ;; 双关联模式: 在两目标间来回切换
+                      (progn
+                        (setq cur-idx (if (= cur-idx 0) 1 0))
+                        (setq d-item (nth cur-idx dual-items))
+                        (if d-item
+                          (progn
+                            (wtf:zoom-to-text d-item nil nil)
+                            (wtf:dual-set-last keyword (1+ cur-idx))
+                            (wtf:save-data)
+                            (wtf:sync-backup-marks)
+                            (princ (strcat "\n[WTF] 已切换到目标 "
+                                           (itoa (1+ cur-idx)) "/" (itoa d-len)))
+                          )
+                        )
+                      )
+                      (progn
+                        (setq result 'back)
+                        (setq done T)
+                      )
+                    )
                   )
                   ((= (strcase char) "ESC")
                     (setq result 'exit)
@@ -1792,6 +1918,92 @@
   ;; 返回前删除定位提示圆
   (wtf:erase-indicator)
   result
+)
+
+;; ============================================================
+;;  统一定位入口
+;;  双关联开启时: 有双关联记录→定位+空格切换/右键返回
+;;                无记录且auto-view-all=T→自动进入看全部模式(左键定义目标)
+;;                无记录且auto-view-all=nil→退回单关联原逻辑
+;;  双关联关闭时: 始终走单关联原逻辑
+;;  返回 'exit(退出程序) / 'back(返回界面)
+;; ============================================================
+(defun wtf:locate-keyword (keyword auto-view-all / key-result)
+  (if (= *wtf-dual-enabled* "1")
+    (progn
+      (setq key-result (wtf:dual-locate keyword auto-view-all))
+      (if (null key-result)
+        (setq key-result (wtf:locate-single keyword))
+      )
+      key-result
+    )
+    (wtf:locate-single keyword)
+  )
+)
+
+;; 单关联定位(原逻辑): 定位到最后选择或第一个匹配结果，空格/右键返回
+;; 返回 'exit 或 'back
+(defun wtf:locate-single (keyword / last-sel item key-result)
+  (setq last-sel (wtf:get-last-selection keyword))
+  (if last-sel
+    (setq item (wtf:find-result-by-handle last-sel))
+    (setq item nil)
+  )
+  ;; 无上次记录时跳转到第一个匹配结果
+  (if (not item)
+    (if (and *wtf-results* (> (length *wtf-results*) 0))
+      (setq item (nth 0 *wtf-results*))
+    )
+  )
+  (if item
+    (progn
+      (wtf:zoom-to-text item nil nil)
+      ;; 记录当前关键词的最后选择(保存实体句柄)
+      (wtf:save-selection keyword (nth 4 item))
+      ;; 保存数据到图纸
+      (wtf:save-data)
+      ;; 等待按键(启用标记时可输入数字打标记)
+      (setq key-result (wtf:wait-for-key keyword nil 0))
+      (if (eq key-result 'exit) 'exit 'back)
+    )
+    'back
+  )
+)
+
+;; 双关联定位: 关键词有双关联记录时定位+空格切换/右键返回，记住最后停留目标
+;; auto-view-all: 无记录时是否自动进入看全部模式(该模式支持左键定义双关联目标)
+;; 返回 'exit / 'back / nil(无记录且未进入看全部，由调用方退化为单关联)
+(defun wtf:dual-locate (keyword auto-view-all / rec d1 d2 d-items start-idx item key-result)
+  (setq rec (wtf:get-dual-selection keyword))
+  (setq d-items nil)
+  (if rec
+    (progn
+      ;; 按句柄找回两个目标实体(失效的句柄跳过)
+      (setq d1 (wtf:dual-find-item (nth 0 rec)))
+      (if d1 (setq d-items (append d-items (list d1))))
+      (setq d2 (wtf:dual-find-item (nth 1 rec)))
+      (if d2 (setq d-items (append d-items (list d2))))
+    )
+  )
+  (cond
+    (d-items
+      ;; 有有效目标: 从最后停留的目标开始(无记录或仅1个目标时从目标1开始)
+      (setq start-idx
+        (if (and (= (nth 2 rec) 2) d2) 1 0)
+      )
+      (setq item (nth start-idx d-items))
+      (wtf:zoom-to-text item nil nil)
+      ;; 等待按键: 空格在两目标间切换，右键返回
+      (setq key-result (wtf:wait-for-key keyword d-items start-idx))
+      (if (eq key-result 'exit) 'exit 'back)
+    )
+    ((and auto-view-all (= *wtf-dual-enabled* "1"))
+      ;; 无双关联记录: 自动进入看全部模式(支持左键定义双关联目标)
+      (wtf:view-all-results keyword)
+      'back
+    )
+    (t nil)
+  )
 )
 
 ;; ============================================================
@@ -2430,8 +2642,9 @@
         ;; 显示备份列表
         (wtf:update-backup-list)
 
-        ;; 标记功能开关初始状态
+        ;; 标记/双关联功能开关初始状态
         (set_tile "tg_mark_enable" *wtf-mark-enabled*)
+        (set_tile "tg_dual_link" *wtf-dual-enabled*)
 
         ;; 动作绑定
         (action_tile "rb_all" "(setq scope 'all)")
@@ -2443,6 +2656,8 @@
         (action_tile "btn_mark_stat" "(wtf:save-keyword-pos) (done_dialog 7)")
         (action_tile "tg_mark_enable"
           "(setq *wtf-mark-enabled* $value) (wtf:save-data)")
+        (action_tile "tg_dual_link"
+          "(setq *wtf-dual-enabled* $value) (wtf:save-data)")
 
         (action_tile "keyword_list"
           "(setq kw-sel-str (get_tile \"keyword_list\"))
@@ -2548,30 +2763,10 @@
                 (setq search-text *wtf-stat-locate-kw*)
                 (setq *wtf-last-search* search-text)
                 (wtf:do-search search-text scope)
-                ;; 优先通过句柄查找上次选择的结果项(跨会话稳定)
-                (setq last-sel (wtf:get-last-selection search-text))
-                (if last-sel
-                  (setq item (wtf:find-result-by-handle last-sel))
-                  (setq item nil))
-                ;; 无上次记录时跳转到第一个匹配结果
-                (if (not item)
-                  (if (and *wtf-results* (> (length *wtf-results*) 0))
-                    (setq item (nth 0 *wtf-results*))
-                  )
-                )
-                (if item
-                  (progn
-                    (wtf:zoom-to-text item nil nil)
-                    ;; 记录当前关键词的最后选择(保存实体句柄)
-                    (wtf:save-selection search-text (nth 4 item))
-                    ;; 保存数据到图纸
-                    (wtf:save-data)
-                    ;; 等待按键(启用标记时可输入数字打标记)
-                    (setq key-result (wtf:wait-for-key search-text))
-                    (if (eq key-result 'exit)
-                      (setq code 0)
-                    )
-                  )
+                ;; 统一定位入口(双关联开启且有关联记录时定位+空格切换，无记录不自动进看全部)
+                (setq key-result (wtf:locate-keyword search-text nil))
+                (if (eq key-result 'exit)
+                  (setq code 0)
                 )
                 ;; 定位返回(空格/右键)后重新打开统计对话框，恢复上次列表状态
                 (if (/= code 0)
@@ -2581,7 +2776,8 @@
             )
           )
           ;; 点击关键词列表项: 填充到查找框并搜索
-          ;; 优先跳转到上次定位的位置(句柄映射，跨会话稳定)，无记录时跳转第一个匹配结果
+          ;; 双关联开启: 有双关联记录→定位+空格切换/右键返回；无记录→自动进入看全部模式定义目标
+          ;; 双关联关闭: 优先跳转到上次定位的位置(句柄映射，跨会话稳定)，无记录时跳转第一个匹配结果
           ((= code 3)
             (setq kw-idx (atoi kw-sel-str))
             (if (and *wtf-keyword-list* (< kw-idx (length *wtf-keyword-list*)))
@@ -2589,30 +2785,10 @@
                 (setq search-text (nth kw-idx *wtf-keyword-list*))
                 (setq *wtf-last-search* search-text)
                 (wtf:do-search search-text scope)
-                ;; 优先通过句柄查找上次选择的结果项(跨会话稳定)
-                (setq last-sel (wtf:get-last-selection search-text))
-                (if last-sel
-                  (setq item (wtf:find-result-by-handle last-sel))
-                  (setq item nil))
-                ;; 无上次记录时跳转到第一个匹配结果
-                (if (not item)
-                  (if (and *wtf-results* (> (length *wtf-results*) 0))
-                    (setq item (nth 0 *wtf-results*))
-                  )
-                )
-                (if item
-                  (progn
-                    (wtf:zoom-to-text item nil nil)
-                    ;; 记录当前关键词的最后选择(保存实体句柄)
-                    (wtf:save-selection search-text (nth 4 item))
-                    ;; 保存数据到图纸
-                    (wtf:save-data)
-                    ;; 等待按键(启用标记时可输入数字打标记)
-                    (setq key-result (wtf:wait-for-key search-text))
-                    (if (eq key-result 'exit)
-                      (setq code 0)
-                    )
-                  )
+                ;; 统一定位入口(双关联开启时无记录自动进看全部定义目标)
+                (setq key-result (wtf:locate-keyword search-text T))
+                (if (eq key-result 'exit)
+                  (setq code 0)
                 )
               )
               (princ "\n[WTF] 无效的关键词选择")
@@ -2630,12 +2806,14 @@
               (progn
                 (setq item (nth sel-idx *wtf-results*))
                 (wtf:zoom-to-text item nil nil)
-                ;; 记录当前关键词的最后选择(保存实体句柄)
-                (wtf:save-selection search-text (nth 4 item))
+                ;; 双关联开启时不写单关联映射(由双关联记录接管)
+                (if (/= *wtf-dual-enabled* "1")
+                  (wtf:save-selection search-text (nth 4 item))
+                )
                 ;; 保存数据到图纸
                 (wtf:save-data)
                 ;; 等待按键(启用标记时可输入数字打标记)
-                (setq key-result (wtf:wait-for-key search-text))
+                (setq key-result (wtf:wait-for-key search-text nil 0))
                 (if (eq key-result 'exit)
                   (setq code 0)
                   ;; 空格返回: code保持非0，继续循环重新显示对话框
@@ -2645,8 +2823,9 @@
             )
           )
           ;; 看全部: 对所有结果执行定位，显示实心圆
+          ;; 双关联开启: 左键关联当前目标(最多2个)，右键返回；关闭时右键确定选择建立单关联映射
           ((= code 10)
-            (setq item (wtf:view-all-results))
+            (setq item (wtf:view-all-results search-text))
             ;; 如果用户选择了结果，建立映射关系
             (if item
               (progn
