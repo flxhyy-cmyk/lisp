@@ -351,20 +351,25 @@
 ;;  安全打开DWG文件（绕过command函数对含空格路径的解析问题）
 ;; ============================================================
 
-;; 获取当前文档的完整路径，未保存则返回 nil
-(defun wdg-current-dwg-path ( / name prefix)
+;; 获取当前文档标识：已保存返回完整路径，未保存返回 *UNSAVED*:DrawingX.dwg
+(defun wdg-current-dwg-path ( / name)
   (setq name (getvar "DWGNAME"))
-  (if (or (not name) (= name "") (wcmatch (strcase name) "DRAWING*.DWG"))
-    nil  ;; 未保存的新文档
-    (strcat (getvar "DWGPREFIX") name)
+  (cond
+    ((or (not name) (= name "")) nil)
+    ((wcmatch (strcase name) "DRAWING*.DWG")
+     (strcat "*UNSAVED*:" name))
+    (T (strcat (getvar "DWGPREFIX") name))
   )
 )
 
 ;; 写入切换对文件，供 WDV 使用
-;; 格式: source_path|dest_path
+;; 格式: source_id|dest_path   source_id 可为完整路径或 *UNSAVED*:DrawingX.dwg
 (defun wdg-write-switch-pair (source-path dest-path / pair-path fh)
-  (if (and source-path dest-path)
+  (if dest-path
     (progn
+      (if (not source-path)
+        (setq source-path (strcat "*UNSAVED*:" (getvar "DWGNAME")))
+      )
       (setq pair-path (strcat (getvar "TEMPPREFIX") "wdg_switch_pair.txt"))
       (setq fh (open pair-path "w"))
       (write-line (strcat source-path "|" dest-path) fh)
@@ -1326,19 +1331,39 @@
 ;; ============================================================
 ;;  WDV 命令：在源文件和WDG打开的目标文件之间切换
 ;;  读取 %TEMP%\wdg_switch_pair.txt，判断当前在源还是目标
+;;  支持未保存图纸（标识 *UNSAVED*:DrawingX.dwg）
 ;;  两个文件都已打开（WDG 保证），只用 vla-put-ActiveDocument 激活
 ;;  不涉及任何文件打开操作
 ;; ============================================================
 
-;; 在已打开的文档集合中按完整路径查找文档对象
-(defun wdv-find-open-doc (target-path / docs doc dp result)
+;; 在已打开的文档集合中按完整路径或未保存标识查找文档对象
+;; target-id: 完整路径 或  *UNSAVED*:DrawingX.dwg
+(defun wdv-find-open-doc (target-id / docs doc dp dname result unsaved-name)
   (setq result nil)
-  (setq docs (vla-get-Documents (vlax-get-acad-object)))
-  (vlax-for doc docs
-    (setq dp (vl-catch-all-apply 'vla-get-FullName (list doc)))
-    (if (and (not (vl-catch-all-error-p dp))
-             (= (strcase dp) (strcase target-path)))
-      (setq result doc)
+  (if (and target-id (/= target-id ""))
+    (progn
+      (setq docs (vla-get-Documents (vlax-get-acad-object)))
+      (if (wcmatch (strcase target-id) "*UNSAVED*:*")
+        ;; 未保存图纸：按文档名称匹配
+        (progn
+          (setq unsaved-name (strcase (substr target-id 11)))
+          (vlax-for doc docs
+            (setq dname (vl-catch-all-apply 'vla-get-Name (list doc)))
+            (if (and (not (vl-catch-all-error-p dname))
+                     (= (strcase dname) unsaved-name))
+              (setq result doc)
+            )
+          )
+        )
+        ;; 已保存：按完整路径匹配
+        (vlax-for doc docs
+          (setq dp (vl-catch-all-apply 'vla-get-FullName (list doc)))
+          (if (and (not (vl-catch-all-error-p dp))
+                   (= (strcase dp) (strcase target-id)))
+            (setq result doc)
+          )
+        )
+      )
     )
   )
   result
@@ -1375,7 +1400,7 @@
                    (princ "\n[WDV] 目标文件未在CAD中打开。")
                  )
                 )
-                ;; 当前是目标 → 激活源
+                ;; 当前是目标 → 激活源（支持未保存源）
                 ((and cur-path (= (strcase cur-path) (strcase dest-path)))
                  (setq target-doc (wdv-find-open-doc src-path))
                  (if target-doc

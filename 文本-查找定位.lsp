@@ -50,6 +50,8 @@
 (setq *wtf-backups* nil)
 ;; 定位缩放比例分母(文字约占屏1/N)，默认1/30，可在主界面点击"定位"按钮从预设值中修改
 (setq *wtf-zoom-denominator* 30)
+;; 查找匹配模式: "contains"=包含匹配(默认)  "exact"=精确匹配
+(setq *wtf-match-mode* "contains")
 
 ;; ============================================================
 ;;  生成 DCL 对话框
@@ -98,6 +100,10 @@
   (write-line "        : radio_button { key = \"rb_window\"; label = \"框选范围查找\"; }" f)
   (write-line "        : toggle { key = \"tg_mark_enable\"; label = \"启用标记\"; }" f)
   (write-line "        : toggle { key = \"tg_dual_link\"; label = \"双关联\"; }" f)
+  (write-line "      }" f)
+  (write-line "      : row {" f)
+  (write-line "        : radio_button { key = \"rb_contains\"; label = \"包含匹配\"; }" f)
+  (write-line "        : radio_button { key = \"rb_exact\"; label = \"精确匹配\"; }" f)
   (write-line "      }" f)
   (write-line "      : row {" f)
   (write-line "        : button {" f)
@@ -994,6 +1000,7 @@
       (vlax-ldata-put dict "keyword-qty" *wtf-keyword-qty*)
       (vlax-ldata-put dict "backups" *wtf-backups*)
       (vlax-ldata-put dict "zoom-denominator" *wtf-zoom-denominator*)
+      (vlax-ldata-put dict "match-mode" *wtf-match-mode*)
     )
   )
 )
@@ -1015,6 +1022,7 @@
       (setq *wtf-keyword-qty* (vlax-ldata-get dict "keyword-qty" nil))
       (setq *wtf-backups* (vlax-ldata-get dict "backups" nil))
       (setq *wtf-zoom-denominator* (vlax-ldata-get dict "zoom-denominator" 30))
+      (setq *wtf-match-mode* (vlax-ldata-get dict "match-mode" "contains"))
       (if (null *wtf-keyword-list*) (setq *wtf-keyword-list* nil))
       (if (null *wtf-last-selection*) (setq *wtf-last-selection* nil))
       (if (null *wtf-dual-enabled*) (setq *wtf-dual-enabled* "0"))
@@ -1023,6 +1031,8 @@
       (if (null *wtf-keyword-top-idx*) (setq *wtf-keyword-top-idx* ""))
       (if (null *wtf-mark-enabled*) (setq *wtf-mark-enabled* "0"))
       (if (null *wtf-backups*) (setq *wtf-backups* nil))
+      (if (or (null *wtf-match-mode*) (/= *wtf-match-mode* "exact"))
+        (setq *wtf-match-mode* "contains"))
     )
   )
 )
@@ -1108,6 +1118,19 @@
 )
 
 ;; ============================================================
+;;  文本匹配判断
+;;  空关键词始终匹配全部；exact=整串相等(忽略大小写)；contains=包含(忽略大小写)
+;; ============================================================
+(defun wtf:text-match (search-text content)
+  (or (= search-text "")
+      (if (= *wtf-match-mode* "exact")
+        (= (strcase search-text) (strcase content))
+        (vl-string-search (strcase search-text) (strcase content))
+      )
+  )
+)
+
+;; ============================================================
 ;;  搜索文字
 ;; ============================================================
 ;; scope: 'all 全图查找(使用缓存) / 'window 框选范围查找
@@ -1146,8 +1169,7 @@
     (progn
       (foreach item cache-list
         (setq content (nth 0 item))
-        (if (or (= search-text "")
-                (vl-string-search (strcase search-text) (strcase content)))
+        (if (wtf:text-match search-text content)
           (setq *wtf-results* (append *wtf-results* (list item)))
         )
       )
@@ -1161,8 +1183,7 @@
           (while (< i (sslength ss))
             (setq ent (ssname ss i))
             (setq content (wtf:get-text-content ent))
-            (if (or (= search-text "")
-                    (vl-string-search (strcase search-text) (strcase content)))
+            (if (wtf:text-match search-text content)
               (progn
                 (setq ins-pt (cdr (assoc 10 (entget ent))))
                 (setq *wtf-results*
@@ -2645,10 +2666,25 @@
         ;; 标记/双关联功能开关初始状态
         (set_tile "tg_mark_enable" *wtf-mark-enabled*)
         (set_tile "tg_dual_link" *wtf-dual-enabled*)
+        ;; 匹配模式单选初始状态
+        (if (= *wtf-match-mode* "exact")
+          (progn
+            (set_tile "rb_exact" "1")
+            (set_tile "rb_contains" "0")
+          )
+          (progn
+            (set_tile "rb_contains" "1")
+            (set_tile "rb_exact" "0")
+          )
+        )
 
         ;; 动作绑定
         (action_tile "rb_all" "(setq scope 'all)")
         (action_tile "rb_window" "(setq scope 'window)")
+        (action_tile "rb_contains"
+          "(setq *wtf-match-mode* \"contains\") (set_tile \"rb_exact\" \"0\") (wtf:save-data)")
+        (action_tile "rb_exact"
+          "(setq *wtf-match-mode* \"exact\") (set_tile \"rb_contains\" \"0\") (wtf:save-data)")
 
         (action_tile "btn_add_keywords" "(wtf:save-keyword-pos) (done_dialog 4)")
         (action_tile "btn_clear_data" "(wtf:save-keyword-pos) (done_dialog 5)")
