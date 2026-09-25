@@ -1,0 +1,1350 @@
+;;; ============================================================
+;;; 属性块-元件材料表汇总.lsp            命令：BOMSUM（别名 BOMS）
+;;; ------------------------------------------------------------
+;;; 作用
+;;;   把全图柜块 + 表头块的元件数据汇成一张「元件材料表」，一个面板集中改：
+;;;     四列：名称 / 型号 / 规格 / 数量
+;;;     数量 = 全图同「名称+型号+规格」的槽位数量之和 —— 只读，改不了
+;;;     名称 / 型号 / 规格 可改，按「写入」一次性回写所有相关属性块。
+;;;
+;;; 数据在哪（与 PLT / UPDBOM 同一套口径）
+;;;   柜块  （带「柜号」标签）      每槽存 元件NN规格 / 元件NN数量 —— 逐柜不同
+;;;   表头块（带「主母线规格」标签） 每槽存 元件NN名称 / 元件NN型号 —— 整排共用
+;;;   分组键 = 名称 + 型号 + 规格（规格参与分组，同型号不同变比不合并）
+;;;   槽要「规格或数量」有值才算数据（整槽全空 = 不是数据，不占行）
+;;;   数量空 / 非数字 / 非正 -> 按 1 计入（与 UPDBOM 同）
+;;;
+;;; 表头怎么配
+;;;   同排（y 差 <= 8）+ 在柜块左边 + 离得最近的那一枚（与 UPDBOM 同口径）。
+;;;   柜块自己就带 元件NN名称/型号 的（箱变那种单块样式）不用表头，
+;;;   直接用本柜的值。
+;;;
+;;; 写回去哪
+;;;   名称 / 型号 -> 写回【表头块】对应槽（单块样式则写回柜块自己）；
+;;;     表头槽整排共用 —— 同一槽被表里多行引用时，改一行会连带改那几行，
+;;;     写完会把这件事故意报出来，不做静默连带。
+;;;   规格 -> 写回【柜块】对应槽，逐柜写；槽位若已被 XBT 加过多行标签
+;;;     （元件NN规格1..M），按同一套宽度规则拆行落位（走内核 plt:putspec）。
+;;;
+;;; 界面为什么这么写
+;;;   ① 按钮回调里【只】调 done_dialog —— 回调表达式不可能抛错，框一定关得掉；
+;;;      取值挪到 start_dialog 返回之后、unload_dialog 之前做。
+;;;   ② 每个可编辑框都绑 action 实时存值 —— 格子里打完字不按回车、
+;;;      直接点「写入」也能拿到最新值。
+;;;   ③ 写入 / 取消用 DCL 内置 accept / cancel —— 回车、ESC、鼠标点是同一条路。
+;;;   ④ 「数量」列是 is_enabled = false 的编辑框：看得见、点不进去、改不了。
+;;;   ⑤ 行多了一页放不下，按 12 行分页；翻页先把本页编辑值存内存，来回翻不丢。
+;;;   ⑥ DCL 落到 %TEMP%（行数随数据变，必须现生成），不改工程目录里任何文件。
+;;;   ⑦ 「智能填写」按钮：把型号列按第一个空格拆开，前段留在型号、
+;;;      后段填进规格；规格列已经有内容的行不碰，只补规格是空的行。
+;;;      对全表所有行生效（不限当前页），点完可直接翻页核对或再点「写入」。
+;;;   ⑧ 「出材料表」按钮：把面板里当前的名称/型号/规格/数量画成一张
+;;;      图上的表格（LINE + 单行 TEXT，画完编成一个组），跟「写入」
+;;;      互不影响 —— 出表不改属性块，写入也不影响已经画出来的表格。
+;;;      一个弹窗一次问完总宽（180/90/自定义）和基点角点（右上角/
+;;;      右下角），再回到图上点基点；点右上角表头在上、点右下角
+;;;      表头在下（序号贴着表头开始编号）。名称/型号规格两列宽度按
+;;;      两列里最长内容的比例智能分配，序号/数量固定宽 8；内容装不下
+;;;      选定总宽时，会问是放宽总宽还是压缩文字宽度因子来凑下。
+;;;      对齐：表头四列都居中；数据行里序号/数量居中，名称/型号规格
+;;;      左对齐。
+;;;      出表前先查图上有没有「上次生成的材料表」（靠 xdata 记住上次
+;;;      用的总宽/角点/基点）：有 -> 直接按原参数原位置重画一遍（先
+;;;      删旧表），不弹窗、不取点，超宽也不问，直接压缩文字宽度凑下；
+;;;      没有 -> 照旧弹窗问总宽+角点、回到图上点基点。
+;;;   ⑨ 每行右边一个「删除」按钮：点一下清空该行 名称/型号/规格 三格
+;;;      （不碰其它行）；清空的行立刻在面板里沉到全表最后一行，
+;;;      下面/后面页的数据整体往上补齐，中间不会留空行——空行只可能
+;;;      出现在末尾。删除跟其它编辑一样只是改内存，真正落图要点
+;;;      「写入」：写入时，三格全空的行除了名称/型号/规格照常清空，
+;;;      还会顺带把它对应柜块槽位的「数量」属性也清掉，图上这个槽位
+;;;      彻底归零，不会被下次 BOMSUM/UPDBOM 当成幽灵数据认回来。
+;;;      删错了，写入前把内容重新填回该行即可撤销。
+;;;
+;;; 不存盘
+;;;   与 PLT / DTP / UPDBOM 同规矩：只改内存，存盘 / 撤销归用户。
+;;;   改完想刷新图上的元器件明细表页，再跑一次 UPDBOM。
+;;;
+;;; 编码：ANSI/GBK 无 BOM
+;;; 依赖：属性块-批量填数.lsp（同目录，本文件自己 load）
+;;; ============================================================
+(vl-load-com)
+(if (null SEP) (setq SEP (chr 10)))
+
+;; ------------------------------------------------------------
+;; 常量
+;; ------------------------------------------------------------
+(setq *bms:prefix*  "元件")        ; 槽位标签前缀
+(setq *bms:tag-cab* "柜号")        ; 认柜块参照的标签
+(setq *bms:tag-hdr* "主母线规格")  ; 认表头块参照的标签
+(setq *bms:hdr-tol* 8.0)           ; 表头与柜块同排的 y 容差
+(setq *bms:perpage* 12)            ; 面板每页几行
+(setq *bms:cols*    '("名称" "型号" "规格" "数量"))
+
+;; 「出材料表·原位置更新」排查用：T 打印 [BOMTAB调试] 诊断信息，
+;; 定位到问题后改成 nil 就不再打印。
+(setq *bms:debug* T)
+(defun bms:dbg (msg)
+  (if *bms:debug* (princ (strcat "\n[BOMTAB调试] " msg)))
+  (princ)
+)
+
+;; ------------------------------------------------------------
+;; 依赖（PLT 内核）
+;; ------------------------------------------------------------
+(setq bms:dep "D:/kk三部曲/148.CAD插件研究/lisp/属性块-批量填数.lsp")
+
+;; 符号在不在（atoms-family 查不到时返回 (nil)，不能直接当布尔用）
+(defun bms:has (s) (if (car (atoms-family 1 (list s))) T nil))
+
+;; 内核不在就 load 一次。返回 T / nil。
+(defun bms:ensure ( / p)
+  (if (bms:has "PLT:PUTSPEC")
+    T
+    (progn
+      (setq p (vl-catch-all-apply 'load (list bms:dep)))
+      (bms:has "PLT:PUTSPEC")
+    )
+  )
+)
+
+;; ================================================================
+;; 一、小工具（DBCS 安全：切中文一律用字节下标）
+;; ================================================================
+
+;; nil -> ""
+(defun bms:nz (s) (if s s ""))
+
+;; 去首尾半角空白（与内核同口径）
+(defun bms:trim (s) (if s (vl-string-trim " \t" s) ""))
+
+;; 把表里第 n 个（0 起）元素换成 v（不够长就补空串）
+(defun bms:setn (lst n v / out i)
+  (setq out nil i 0)
+  (foreach e lst
+    (setq out (cons (if (= i n) v e) out))
+    (setq i (1+ i))
+  )
+  (setq out (reverse out))
+  (while (<= (length out) n)
+    (setq out (append out (list "")))
+  )
+  out
+)
+
+;; 移除表里第一个等于 x 的元素（vl-remove 会删掉全部，排序时只要删一个）
+(defun bms:rem1 (x lst / out hit)
+  (setq out nil hit nil)
+  (foreach e lst
+    (if (and (null hit) (equal e x))
+      (setq hit T)
+      (setq out (cons e out))
+    )
+  )
+  (reverse out)
+)
+
+;; 并集（保持原顺序，已存在的不重复加）
+(defun bms:addu (a b)
+  (foreach x b
+    (if (not (member x a)) (setq a (append a (list x))))
+  )
+  a
+)
+
+;; 实体句柄串（报错/提示里给人看）
+(defun bms:hnd (e / h)
+  (setq h (if e (cdr (assoc 5 (entget e))) nil))
+  (if h h "?")
+)
+
+;; DCL 字符串里不能出现裸引号 / 反斜杠 —— 换掉，否则整份 DCL 解析失败、弹窗静默不出
+(defun bms:esc (s / x)
+  (cond
+    ((null s) (setq x ""))
+    ((= (type s) 'STR) (setq x s))
+    ((= (type s) 'INT) (setq x (itoa s)))
+    ((= (type s) 'REAL) (setq x (rtos s 2 2)))
+    (T (setq x (vl-princ-to-string s)))
+  )
+  (vl-string-translate "\"\\" "  " x)
+)
+
+;; 数量文本 -> 实数（空 / 非数字 / 非正 一律按 1）
+(defun bms:qval (s / v)
+  (setq s (bms:trim s))
+  (if (= s "")
+    1.0
+    (progn
+      (setq v (atof s))
+      (if (<= v 0.0) 1.0 v)
+    )
+  )
+)
+
+;; 数量实数 -> 显示文本（整数不带小数点）
+(defun bms:qstr (q)
+  (if (equal q (float (fix q)) 1e-9)
+    (itoa (fix q))
+    (rtos q 2 4)
+  )
+)
+
+;; 属性对象的文本值（组码 1）
+(defun bms:av (e / ed)
+  (setq ed (entget e))
+  (if (assoc 1 ed) (cdr (assoc 1 ed)) "")
+)
+
+;; 槽位标签 -> (槽号 字段)；不是槽位标签返回 nil
+;;   元件01规格 -> (1 "规格")    元件01规格2 -> (1 "规格")   多行按序拼回
+(defun bms:slotfld (tg / rest num fld)
+  (if (and tg (plt:pfx tg *bms:prefix*))
+    (progn
+      (setq rest (substr tg 5))          ; 「元件」= 4 字节
+      (setq num  (substr rest 1 2))      ; 两位 ASCII，按字节取安全
+      (setq fld  (substr rest 3))        ; 中文部分
+      (if (not (plt:num num))
+        nil
+        (cond
+          ((plt:pfx fld "名称") (list (atoi num) "名称"))
+          ((plt:pfx fld "型号") (list (atoi num) "型号"))
+          ((plt:pfx fld "规格") (list (atoi num) "规格"))
+          ((plt:pfx fld "数量") (list (atoi num) "数量"))
+          (T nil)
+        )
+      )
+    )
+    nil
+  )
+)
+
+;; 属性表 -> ((槽号 名称 型号 规格 数量) ...)，槽号升序
+;;   名称/型号/规格 的多行标签（…1 …2）按块定义顺序拼回；
+;;   数量 取最后一个非空（数量不该拼）
+(defun bms:slots (atts / out sf k idx hit cur v)
+  (setq out nil)
+  (foreach a atts
+    (setq sf (bms:slotfld (car a)))
+    (if sf
+      (progn
+        (setq k (car sf) v (bms:av (cdr a)))
+        (cond
+          ((= (cadr sf) "名称") (setq idx 0))
+          ((= (cadr sf) "型号") (setq idx 1))
+          ((= (cadr sf) "规格") (setq idx 2))
+          (T (setq idx 3))
+        )
+        (setq hit (assoc k out))
+        (if hit
+          (progn
+            (setq cur (cdr hit))
+            (if (= idx 3)
+              (if (/= (bms:trim v) "")
+                (setq cur (bms:setn cur 3 v))
+              )
+              (setq cur (bms:setn cur idx (strcat (nth idx cur) v)))
+            )
+            (setq out (subst (cons k cur) hit out))
+          )
+          (setq out (append out (list (cons k (bms:setn (list "" "" "" "") idx v)))))
+        )
+      )
+    )
+  )
+  ;; 槽号升序（不用 vl-sort，避免相等元素被吃掉）
+  (setq cur nil)
+  (while out
+    (setq hit (car out))
+    (foreach p out (if (< (car p) (car hit)) (setq hit p)))
+    (setq cur (cons hit cur))
+    (setq out (bms:rem1 hit out))
+  )
+  (reverse cur)
+)
+
+;; ================================================================
+;; 二、图上扫描 / 配对
+;; ================================================================
+
+;; 模型空间扫描 -> (柜表 表头表)
+;;   柜   = (图元名 插入x 插入y 属性表)
+;;   表头 = 同上
+;;   靠【标签】认块，不靠块名（GKC 扩容后块名会被污染）
+(defun bms:scan ( / ss i n e atts p cabs hdrs)
+  (setq cabs nil hdrs nil)
+  (setq ss (ssget "_X" '((0 . "INSERT") (410 . "Model"))))
+  (if ss
+    (progn
+      (setq i 0 n (sslength ss))
+      (while (< i n)
+        (setq e (ssname ss i) i (1+ i))
+        (setq atts (plt:atts e))
+        (if atts
+          (progn
+            (setq p (cdr (assoc 10 (entget e))))
+            (cond
+              ((assoc *bms:tag-cab* atts)
+               (setq cabs (cons (list e (car p) (cadr p) atts) cabs)))
+              ((assoc *bms:tag-hdr* atts)
+               (setq hdrs (cons (list e (car p) (cadr p) atts) hdrs)))
+            )
+          )
+        )
+      )
+    )
+  )
+  (list (reverse cabs) (reverse hdrs))
+)
+
+;; 给一台柜配表头：同排（|dy| <= 容差）+ 在柜左边 + x 最大（离得最近）
+(defun bms:pair (hdrs cab / best bx cx cy hx hy)
+  (setq cx (cadr cab) cy (caddr cab) best nil bx nil)
+  (foreach h hdrs
+    (setq hx (cadr h) hy (caddr h))
+    (if (and (<= (abs (- hy cy)) *bms:hdr-tol*) (<= hx cx))
+      (if (or (null bx) (> hx bx)) (setq best h bx hx))
+    )
+  )
+  best
+)
+
+;; ================================================================
+;; 三、汇总
+;; ================================================================
+;; 行 = (名称 型号 规格 数量 名称来源表 型号来源表 规格来源表)
+;;   来源表 = ((块图元名 . 槽号) ...)
+;;   数量 = 全图同「名称+型号+规格」的槽位数量之和
+;; ================================================================
+(defun bms:collect ( / sc cabs hdrs dic cab sl hdr hsl s k spec qty hs
+                       nm md q nmsrc mdsrc spsrc key hit keys)
+  (setq sc (bms:scan) cabs (car sc) hdrs (cadr sc) dic nil)
+  (foreach cab cabs
+    (setq sl (bms:slots (nth 3 cab)))
+    (setq hdr (bms:pair hdrs cab))
+    (setq hsl (if hdr (bms:slots (nth 3 hdr)) nil))
+    (foreach s sl
+      (setq k (car s) spec (bms:trim (nth 2 (cdr s))) qty (nth 3 (cdr s)))
+      ;; 只有「规格或数量有值」的槽才算数据（整槽空 -> 幽灵行，不要）
+      (if (or (/= spec "") (/= (bms:trim qty) ""))
+        (progn
+          (setq nm "" md "" nmsrc nil mdsrc nil)
+          (setq hs (assoc k hsl))
+          (cond
+            ;; 配到表头：名称/型号 归表头块
+            ;;   bms:slots 返回 (槽号 . (名称 型号 规格 数量)) —— 名称 = nth 0
+            (hs
+             (setq nm (bms:trim (nth 0 (cdr hs)))
+                   md (bms:trim (nth 1 (cdr hs)))
+                   nmsrc (list (cons (car hdr) k))
+                   mdsrc (list (cons (car hdr) k)))
+            )
+            ;; 没配到表头：柜块自己带 名称/型号 的（单块样式）就地用
+            (T
+             (setq nm (bms:trim (nth 0 (cdr s)))
+                   md (bms:trim (nth 1 (cdr s))))
+             (if (or (/= nm "") (/= md ""))
+                (setq nmsrc (list (cons (car cab) k))
+                      mdsrc (list (cons (car cab) k)))
+             )
+            )
+          )
+          (setq q (bms:qval qty))
+          (setq spsrc (list (cons (car cab) k)))
+          (setq key (strcat nm "|" md "|" spec))
+          (setq hit (assoc key dic))
+          (if hit
+            (setq dic (subst (list key nm md spec
+                                   (+ (nth 4 hit) q)
+                                   (bms:addu (nth 5 hit) nmsrc)
+                                   (bms:addu (nth 6 hit) mdsrc)
+                                   (bms:addu (nth 7 hit) spsrc))
+                             hit dic))
+            (setq dic (append dic (list (list key nm md spec q nmsrc mdsrc spsrc))))
+          )
+        )
+      )
+    )
+  )
+  ;; 行序 = 「名称|型号|规格」码序（与 UPDBOM / MCP 同一套）
+  (setq keys (vl-sort (mapcar 'car dic) '(lambda (a b) (< a b))))
+  (setq hit (mapcar '(lambda (kk) (cdr (assoc kk dic))) keys))
+  hit
+)
+
+;; 表头槽 -> 被几行引用（"句柄|槽号" . 行数）；用来报「连带改」
+(defun bms:hshare (rows / dic r se k hit)
+  (setq dic nil)
+  (foreach r rows
+    (foreach se (nth 5 r)
+      (setq k (strcat (bms:hnd (car se)) "|" (itoa (cdr se))))
+      (setq hit (assoc k dic))
+      (if hit
+        (setq dic (subst (cons k (1+ (cdr hit))) hit dic))
+        (setq dic (append dic (list (cons k 1))))
+      )
+    )
+  )
+  dic
+)
+
+;; ================================================================
+;; 四、写回
+;; ================================================================
+;; 按 *bms:edits* 里的编辑值逐行回写：
+;;   名称 / 型号 -> 表头块（或单块样式的柜块自己）元件NN名称 / 元件NN型号
+;;   规格        -> 柜块 元件NN规格（多行标签走内核 plt:putspec 拆行）
+;; 返回给人看的报告文字。不存盘。
+(defun bms:write ( / hs i j old new srcs nrow ncell nhdr nspec nsh nno
+                     r se tg ck share blank ndel nqty)
+  (setq hs (bms:hshare *bms:rows*))
+  (setq i 0 nrow 0 ncell 0 nhdr 0 nspec 0 nsh 0 nno 0 ndel 0 nqty 0)
+  (foreach r *bms:rows*
+    ;; 名称/型号 没有来源（没表头块、也不带自己的名称型号）-> 改不动
+    (if (or (null (nth 4 r)) (null (nth 5 r))) (setq nno (1+ nno)))
+    (setq j 0)
+    (foreach srcs (list (nth 4 r) (nth 5 r) (nth 6 r))
+      (setq old (nth j r) new (bms:curval i j))
+      (if (/= new old)
+        (progn
+          (setq nrow (1+ nrow))
+          (if (= j 2)
+            ;; 规格：逐柜写（多行标签由 plt:putspec 按宽度拆行）
+            (foreach se srcs
+              (if (car (plt:putspec (plt:atts (car se)) (cdr se) new T))
+                (setq ncell (1+ ncell) nspec (1+ nspec))
+              )
+            )
+            ;; 名称 / 型号：写表头槽
+            (progn
+              (setq tg (if (= j 0) "名称" "型号"))
+              (foreach se srcs
+                (if (plt:put (plt:atts (car se)) (plt:tagk (cdr se) tg) new T)
+                  (progn
+                    (setq ncell (1+ ncell) nhdr (1+ nhdr))
+                    (setq ck (strcat (bms:hnd (car se)) "|" (itoa (cdr se))))
+                    (setq share (assoc ck hs))
+                    (if (and share (> (cdr share) 1)) (setq nsh (1+ nsh)))
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+      (setq j (1+ j))
+    )
+    ;; 「删除」（或手动把三格都清空）的行：连带把对应柜块槽位的「数量」
+    ;;   属性也清掉——名称/型号/规格已经按上面的常规逻辑清成空串了，
+    ;;   这里只补数量，让槽位彻底归零，不会被下次汇总当成幽灵数据认回来。
+    (setq blank (and (= (bms:trim (bms:curval i 0)) "")
+                      (= (bms:trim (bms:curval i 1)) "")
+                      (= (bms:trim (bms:curval i 2)) "")))
+    (if blank
+      (progn
+        (setq ndel (1+ ndel))
+        (foreach se (nth 6 r)
+          (if (plt:put (plt:atts (car se)) (plt:tagk (cdr se) "数量") "" T)
+            (setq nqty (1+ nqty))
+          )
+        )
+      )
+    )
+    (setq i (1+ i))
+  )
+  (strcat
+    "已写入 " (itoa nrow) " 行改动 / 属性 " (itoa ncell) " 格"
+    "（表头 " (itoa nhdr) " 格 · 柜块规格 " (itoa nspec) " 格）"
+    (if (= nrow 0) (strcat SEP "  （没有任何改动，图没动）") "")
+    (if (> nsh 0)
+      (strcat SEP "  注意：" (itoa nsh)
+              " 格写在【多行共用的表头槽】上 —— 那几行的名称/型号会跟着一起变。") "")
+    (if (> nno 0)
+      (strcat SEP "  提示：" (itoa nno)
+              " 行没配到表头块（本排左边找不到表头），名称/型号 没有落点、写不回去。") "")
+    (if (> ndel 0)
+      (strcat SEP "  已清空 " (itoa ndel) " 行（含数量属性 " (itoa nqty) " 格），"
+              "对应柜块槽位已归零。") "")
+    SEP "  没存盘，改动都在内存里；想刷新图上的元器件明细表页，再跑一次 UPDBOM。"
+  )
+)
+
+;; ================================================================
+;; 五、界面（DCL）
+;; ================================================================
+(setq *bms:rows* nil *bms:edits* nil *bms:live* nil *bms:keys* nil *bms:ok* nil
+      *bms:order* nil *bms:delri* nil *bms:tabrows* nil)
+
+;; DCL 落到 %TEMP%（行数随数据变，必须现生成）
+(defun bms:tmppath (name / d c)
+  (setq d (getvar "TEMPPREFIX"))
+  (if (or (null d) (= d ""))
+    (setq d (vl-filename-mktemp "bms"))
+  )
+  (setq c (substr d (strlen d) 1))
+  (if (and (/= c "\\") (/= c "/")) (setq d (strcat d "\\")))
+  (strcat d name)
+)
+(defun bms:dclpath () (bms:tmppath "bms_dlg.dcl"))
+
+;; 安全的 get_tile：键不存在 / 对话框已卸载都不抛错，一律当空串
+(defun bms:gts (k / r)
+  (setq r (vl-catch-all-apply 'get_tile (list k)))
+  (if (vl-catch-all-error-p r) "" (bms:nz r))
+)
+
+;; 编辑框实时存值：*bms:live* = ((键 . 值) ...)
+;;   ★ 必须给每个编辑框绑 action —— 没绑 action 的格子，用户打完字
+;;     不按回车直接点按钮时值不提交，get_tile 会取到旧值。
+(defun bms:live1 (k)
+  (setq *bms:live* (cons (cons k (bms:gts k)) *bms:live*))
+)
+
+;; 某行某列的当前值：编辑过用编辑值，没编辑过用原值
+(defun bms:curval (ri j / e)
+  (setq e (assoc ri *bms:edits*))
+  (if e (nth j (cdr e)) (nth j (nth ri *bms:rows*)))
+)
+
+;; 记下一行某列的值（跨页保留）
+(defun bms:setval (ri j v / e cur)
+  (setq e (assoc ri *bms:edits*))
+  (if e
+    (setq *bms:edits* (subst (cons ri (bms:setn (cdr e) j v)) e *bms:edits*))
+    (progn
+      ;; 首次给这一行建编辑记录时，未设置的列必须先取当前真实值兜底，
+      ;; 不能用空字符串占位——否则同一轮 bms:snap 里紧接着处理的其它列，
+      ;; 会因为 bms:curval 见记录已存在而读到这个空占位，被静默清空。
+      (setq cur (list (bms:curval ri 0) (bms:curval ri 1) (bms:curval ri 2)))
+      (setq *bms:edits* (append *bms:edits*
+                                (list (cons ri (bms:setn cur j v)))))
+    )
+  )
+)
+
+;; start_dialog 返回后、unload_dialog 之前，把本页每格的编辑值收进 *bms:edits*
+;;   ★ 只有真被编辑过（*bms:live* 里有记录）的格子才用最新的输入值；
+;;     没碰过的格子保留「当前值」（bms:curval：优先 *bms:edits*，
+;;     没有才落到原始值）—— 之前这里落到的是原始值，会把「智能填写」
+;;     刚存进 *bms:edits* 但用户没点进去的格子悄悄还原，现在不会了。
+;;     没被激活过的 edit_box，get_tile 读出来可能是空串（不是旧值），
+;;     所以才不能直接信 get_tile，得走 *bms:live* / bms:curval 这条路。
+(defun bms:snap ( / kv k ri j v)
+  (foreach kv *bms:keys*
+    (setq k (car kv) ri (cadr kv) j (caddr kv))
+    (setq v (cdr (assoc k *bms:live*)))
+    (if (null v) (setq v (bms:curval ri j)))
+    (bms:setval ri j v)
+  )
+)
+
+;; 某行「名称/型号/规格」是否三格全空（含被「删除」按钮清空的行，
+;;   也含手动把三格都编辑成空的行）——两种情况一视同仁，都算「删除」。
+(defun bms:blankrow (ri)
+  (and (= (bms:trim (bms:curval ri 0)) "")
+       (= (bms:trim (bms:curval ri 1)) "")
+       (= (bms:trim (bms:curval ri 2)) ""))
+)
+
+;; 重新排面板显示顺序：非空行按原序在前，空行（已删除）按原序沉到最后。
+;;   永远从 0..n-1 的原始序号重新分组，不基于上一次 *bms:order*，
+;;   避免多次删除后顺序越叠越乱。
+(defun bms:recompact ( / n i keep del)
+  (setq n (length *bms:rows*) i 0 keep nil del nil)
+  (while (< i n)
+    (if (bms:blankrow i) (setq del (cons i del)) (setq keep (cons i keep)))
+    (setq i (1+ i))
+  )
+  (setq *bms:order* (append (reverse keep) (reverse del)))
+)
+
+;; 「删除」按钮点击后执行：清空该行 名称/型号/规格 三格（跨页保留，
+;;   写法与手动编辑成空完全一样）；真正沉底靠随后调用 bms:recompact。
+(defun bms:delrow (ri)
+  (if ri
+    (progn
+      (bms:setval ri 0 "")
+      (bms:setval ri 1 "")
+      (bms:setval ri 2 "")
+    )
+  )
+)
+
+;; 总页数
+(defun bms:npage (n)
+  (if (< n 1) 1 (1+ (/ (1- n) *bms:perpage*)))
+)
+
+;; 第 pg 页（0 起）的行号表（全局下标，按 *bms:order* 当前显示顺序取）
+(defun bms:page (pg / i n out)
+  (setq i (* pg *bms:perpage*) n (length *bms:order*) out nil)
+  (while (and (< i n) (< (length out) *bms:perpage*))
+    (setq out (cons (nth i *bms:order*) out) i (1+ i))
+  )
+  (reverse out)
+)
+
+;; 生成 DCL：表头行 + 每行 3 个可编辑框 + 1 个只读数量框 + 1 个删除按钮
+;;   curpg = 本页要显示的行号表（全局下标，来自 bms:page，已按 *bms:order*
+;;   排好显示顺序）——控件 key 直接用这个全局行号做后缀，与 bms:ui 里
+;;   *bms:keys* / action_tile 绑定时用的行号一致，翻页也不会对错格子。
+(defun bms:mkdcl (fn ttl pg npage curpg / h ri)
+  (setq h (open fn "w"))
+  (if (null h)
+    nil
+    (progn
+      (write-line "bmsdcl : dialog {" h)
+      (write-line (strcat "  label = \"" (bms:esc ttl) "\";") h)
+      (write-line "  : text { key = \"hint\"; }" h)
+      (write-line (strcat "  : text { label = \"数量 = 全图同「名称+型号+规格」的汇总，只读。"
+                          "名称/型号 回写表头块，规格 回写各柜块；按「写入」一次性落图。"
+                          "删除会清空整行（含数量），清空的行自动排到最后。\"; }") h)
+      ;; 列名行
+      (write-line "  : row {" h)
+      (write-line "    : text { label = \"名称\"; width = 22; }" h)
+      (write-line "    : text { label = \"型号\"; width = 22; }" h)
+      (write-line "    : text { label = \"规格\"; width = 26; }" h)
+      (write-line "    : text { label = \"数量\"; width = 8; }" h)
+      (write-line "    : text { label = \"\"; width = 8; }" h)
+      (write-line "  }" h)
+      ;; 每行
+      (foreach ri curpg
+        (write-line "  : row {" h)
+        (write-line (strcat "    : edit_box { key = \"e0_" (itoa ri)
+                            "\"; edit_width = 20; width = 22; }") h)
+        (write-line (strcat "    : edit_box { key = \"e1_" (itoa ri)
+                            "\"; edit_width = 20; width = 22; }") h)
+        (write-line (strcat "    : edit_box { key = \"e2_" (itoa ri)
+                            "\"; edit_width = 24; width = 26; }") h)
+        (write-line (strcat "    : edit_box { key = \"q_" (itoa ri)
+                            "\"; edit_width = 6; width = 8; is_enabled = false; }") h)
+        (write-line (strcat "    : button { key = \"del_" (itoa ri)
+                            "\"; label = \"删除\"; width = 8; }") h)
+        (write-line "  }" h)
+      )
+      ;; 出表行（单独一行，避免和分页/写入/取消挤在一起）
+      (write-line "  : row {" h)
+      (write-line "    : button { key = \"btable\"; label = \"出材料表\"; }" h)
+      (write-line "  }" h)
+      ;; 按钮行
+      (write-line "  : row {" h)
+      (if (> npage 1)
+        (progn
+          (if (> pg 0)
+            (write-line "    : button { key = \"bprev\"; label = \"< 上一页\"; }" h)
+          )
+          (if (< pg (1- npage))
+            (write-line "    : button { key = \"bnext\"; label = \"下一页 >\"; }" h)
+          )
+        )
+      )
+      (write-line "    : button { key = \"bsmart\"; label = \"智能填写\"; }" h)
+      (write-line "    : button { key = \"accept\"; label = \"写入\"; is_default = true; }" h)
+      (write-line "    : button { key = \"cancel\"; label = \"取消\"; is_cancel = true; }" h)
+      (write-line "  }" h)
+      (write-line "}" h)
+      (close h)
+      T
+    )
+  )
+)
+
+;; 把字符串按第一个空格拆成前后两段：(前段 . 后段)；没有空格则 (原串(去空白) . nil)
+(defun bms:splitsp (v / p)
+  (setq v (bms:nz v))
+  (setq p (vl-string-search " " v))
+  (if p
+    (cons (bms:trim (substr v 1 p)) (bms:trim (substr v (+ p 2))))
+    (cons (bms:trim v) nil)
+  )
+)
+
+;; 智能填写：型号列按第一个空格拆分 —— 前段回填型号，后段回填规格；
+;;   规格列已有内容的行保持原样不动，只有规格为空的行才写入拆出来的后段。
+;;   对全部行生效（不止当前页），值经 bms:curval/bms:setval 读写，
+;;   与翻页存值机制共用，切页/写入时会带着一起生效。
+(defun bms:smartfill ( / i n md sp pr)
+  (setq i 0 n (length *bms:rows*))
+  (while (< i n)
+    (setq md (bms:nz (bms:curval i 1)))   ; 型号列（j=1）
+    (setq sp (bms:nz (bms:curval i 2)))   ; 规格列（j=2）
+    (setq pr (bms:splitsp md))
+    (if (cdr pr)                          ; 有空格才拆，没空格的型号原样不动
+      (progn
+        (bms:setval i 1 (car pr))
+        (if (= (bms:trim sp) "")
+          (bms:setval i 2 (cdr pr))
+        )
+      )
+    )
+    (setq i (1+ i))
+  )
+)
+
+;; 弹窗（分页循环）。返回 T = 按了「写入」，nil = 取消 / 出错
+;;   ★ 按钮回调里只调 done_dialog（删除按钮多记一个行号变量），表达式
+;;     绝不抛错，框一定关得掉。
+(defun bms:ui (rows ttl / npage pg go r fn id curpg kv ri j)
+  (setq *bms:rows* rows *bms:edits* nil *bms:ok* nil)
+  (bms:recompact)
+  (setq npage (bms:npage (length rows)) pg 0 go T)
+  (while go
+    (setq curpg (bms:page pg))
+    ;; 键序 = 行在前、列在后，与 bms:mkdcl 的生成顺序一致
+    (setq *bms:keys* nil)
+    (foreach ri curpg
+      (setq j 0)
+      (while (< j 3)
+        (setq *bms:keys* (append *bms:keys*
+                                 (list (list (strcat "e" (itoa j) "_" (itoa ri)) ri j))))
+        (setq j (1+ j))
+      )
+    )
+    (setq fn (bms:dclpath))
+    (if (null (bms:mkdcl fn ttl pg npage curpg))
+      (progn (princ (strcat "\n写不出 DCL 文件：" fn)) (setq go nil))
+      (progn
+        (setq id (load_dialog fn))
+        (if (< id 0)
+          (progn (princ "\n加载对话框失败。") (setq go nil))
+          (progn
+            (if (not (new_dialog "bmsdcl" id))
+              (progn (unload_dialog id) (princ "\n打开对话框失败。") (setq go nil))
+              (progn
+                (setq *bms:live* nil)
+                (set_tile "hint"
+                          (strcat "第 " (itoa (1+ pg)) "/" (itoa npage) " 页 · 共 "
+                                  (itoa (length rows)) " 行 · 数量列为全图汇总，不可改"))
+                ;; 可编辑列：填当前值 + 绑实时存值
+                (foreach kv *bms:keys*
+                  (setq ri (cadr kv) j (caddr kv))
+                  (set_tile (car kv) (bms:nz (bms:curval ri j)))
+                  (vl-catch-all-apply 'action_tile
+                    (list (car kv) (strcat "(bms:live1 \"" (car kv) "\")")))
+                )
+                ;; 数量列（只读）+ 删除按钮（点了只记下是哪一行，随即关窗处理）
+                (foreach ri curpg
+                  (set_tile (strcat "q_" (itoa ri))
+                            (bms:qstr (nth 3 (nth ri rows))))
+                  (vl-catch-all-apply 'action_tile
+                    (list (strcat "del_" (itoa ri))
+                          (strcat "(progn (setq *bms:delri* " (itoa ri) ") (done_dialog 6))")))
+                )
+                ;; 按钮回调：只调 done_dialog（或先记一个行号变量再调），绝不夹带别的动作
+                (action_tile "accept" "(done_dialog 1)")
+                (action_tile "cancel" "(done_dialog 0)")
+                (if (> pg 0) (action_tile "bprev" "(done_dialog 2)"))
+                (if (< pg (1- npage)) (action_tile "bnext" "(done_dialog 3)"))
+                (action_tile "bsmart" "(done_dialog 4)")
+                (action_tile "btable" "(done_dialog 5)")
+                ;; 焦点给第一个输入框
+                (if *bms:keys*
+                  (vl-catch-all-apply 'mode_tile (list (car (car *bms:keys*)) 2))
+                )
+                (setq r (vl-catch-all-apply 'start_dialog nil))
+                (cond
+                  ((vl-catch-all-error-p r)
+                   (vl-catch-all-apply 'done_dialog (list 0))
+                   (princ (strcat "\n对话框异常：" (vl-catch-all-error-message r)))
+                   (setq go nil)
+                  )
+                  (T
+                   ;; 关闭后（1 写入 / 2 上页 / 3 下页 / 4 智能填写 / 5 出材料表 / 6 删除本行）
+                   ;;   才取值 —— 此时 DCL 资源还在
+                   (if (member r '(1 2 3 4 5 6))
+                     (vl-catch-all-apply 'bms:snap nil)
+                   )
+                   (cond
+                     ((= r 1) (setq *bms:ok* T go nil))
+                     ((= r 2) (setq pg (1- pg)))
+                     ((= r 3) (setq pg (1+ pg)))
+                     ((= r 4) (vl-catch-all-apply 'bms:smartfill nil))
+                     ((= r 5) (setq *bms:ok* 'table go nil))
+                     ((= r 6)
+                      ;; 清空这一行三格，再重新分组排序——非空行沉不下去，
+                      ;;   空行统一沉到最后；本页可能因此换了内容，留在
+                      ;;   同一 pg 重新弹窗，让用户立刻看到「往上补齐」的效果。
+                      (bms:delrow *bms:delri*)
+                      (bms:recompact)
+                     )
+                     (T (setq go nil))
+                   )
+                  )
+                )
+                (unload_dialog id)
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  *bms:ok*
+)
+
+;; ================================================================
+;; 五之二、出材料表（画图元 + 编组，不存盘、不改属性块）
+;; ================================================================
+;; 按钮「出材料表」用的是弹窗里当前显示的值（含未点「写入」的编辑，
+;; 也含点过的「智能填写」），跟点「写入」互不影响、互不冲突。
+;; 表格用 LINE + 单行 TEXT 拼出来，最后编成一个组，方便整体移动/删除。
+
+(setq *bmt:rowh* 6.0)     ; 行高
+(setq *bmt:th*   3.0)     ; 文字高度
+(setq *bmt:wf*   0.7)     ; 默认文字宽度因子
+(setq *bmt:fixw* 8.0)     ; 序号 / 数量列固定宽度
+(setq *bmt:pad*  1.0)     ; 左对齐格子（型号规格）左侧留白
+
+;; 型号 + 规格 合并显示：都非空用空格连，只有一个非空就用那个
+(defun bms:msjoin (md sp)
+  (cond
+    ((and (/= md "") (/= sp "")) (strcat md " " sp))
+    ((/= md "") md)
+    ((/= sp "") sp)
+    (T "")
+  )
+)
+
+;; 取「出材料表」第 i 行（0 起，只数未删除的行）弹窗里当前显示的值：
+;;   (名称 型号规格 数量)。i 先经 *bms:tabrows*（bms:mktable 按 *bms:order*
+;;   过滤掉已清空行后算出的全局行号表）映射回真实行号，再取值——
+;;   保证出的表跟面板一样，删掉的行不会画成空行。
+(defun bms:tabrow (i / ri nm md sp)
+  (setq ri (nth i *bms:tabrows*))
+  (setq nm (bms:trim (bms:curval ri 0)))
+  (setq md (bms:trim (bms:curval ri 1)))
+  (setq sp (bms:trim (bms:curval ri 2)))
+  (list nm (bms:msjoin md sp) (bms:qstr (nth 3 (nth ri *bms:rows*))))
+)
+
+;; 字符串在给定文字高度、宽度因子=1 时的自然宽度；量不出来就按字符数估一个
+(defun bms:txtw (s h / tb)
+  (setq s (bms:nz s))
+  (if (= s "")
+    0.0
+    (progn
+      (setq tb (vl-catch-all-apply 'textbox (list (list (cons 1 s) (cons 40 h)))))
+      (if (or (null tb) (vl-catch-all-error-p tb))
+        (* (strlen s) h 0.7)
+        (- (car (cadr tb)) (car (car tb)))
+      )
+    )
+  )
+)
+
+(defun bms:mkline (p1 p2)
+  (entmake (list '(0 . "LINE") (cons 10 p1) (cons 11 p2)))
+  (entlast)
+)
+
+;; halign：0=左对齐（垂直居中） 1=正中；单行文本，宽度因子 wf
+(defun bms:mktext (pt txt h wf halign)
+  (entmake (list '(0 . "TEXT")
+                 (cons 10 pt) (cons 11 pt)
+                 (cons 40 h) (cons 41 wf)
+                 (cons 50 0.0)
+                 (cons 72 halign) (cons 73 2)
+                 (cons 1 txt)))
+  (entlast)
+)
+
+;; 行 rr（0=表头，1..n=数据）自顶向下数第几格（0 起）：
+;;   基点右上角 -> 表头在最上面，格号就是 rr 本身；
+;;   基点右下角 -> 表头在最下面，数据行从贴着表头那行开始编号，越远越大。
+(defun bms:slotk (rr corner rowsn)
+  (if (= corner "TR") rr (- rowsn 1 rr))
+)
+
+;; 编组用的名字（时间戳拼出来，重名概率很低）
+(defun bms:gname ( / s)
+  (setq s (rtos (getvar "CDATE") 2 6))
+  (strcat "BOMTAB-" (vl-string-translate "." "-" s))
+)
+
+;; 把画好的实体编成一个组；编组失败不影响已经画出来的表格本身
+(defun bms:mkgroup (ents / doc grp arr i r nm)
+  (setq nm (bms:gname))
+  (bms:dbg (strcat "mkgroup 开始，实体数 " (itoa (length ents)) "，编组名 " nm))
+  (setq r
+    (vl-catch-all-apply
+      (function
+        (lambda ()
+          (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+          (setq grp (vla-Add (vla-get-Groups doc) nm))
+          (setq arr (vlax-make-safearray vlax-vbObject (cons 0 (1- (length ents)))))
+          (setq i 0)
+          (foreach e ents
+            (vlax-safearray-put-element arr i (vlax-ename->vla-object e))
+            (setq i (1+ i))
+          )
+          (vla-AppendItems grp arr)
+        )
+      )
+    )
+  )
+  (if (vl-catch-all-error-p r)
+    (bms:dbg (strcat "mkgroup 失败：" (vl-catch-all-error-message r)))
+    (bms:dbg "mkgroup 成功")
+  )
+)
+
+;; ------------------------------------------------------------
+;; 材料表「记忆」：把本次出表用的 总宽/角点/基点 编码成 xdata，绑在
+;; 表格每个实体上。下次再点「出材料表」时，靠这份 xdata 认出「上次
+;; 的表」，不弹窗、不取点，直接按原参数原位置重画一遍（先删旧表）。
+;; ------------------------------------------------------------
+
+;; 注册 APPID（只需成功一次，已存在就跳过）
+(defun bms:regapp ()
+  (if (not (tblsearch "APPID" "BOMTAB")) (regapp "BOMTAB"))
+)
+
+;; 按 "|" 切分字符串
+(defun bms:splitpipe (s / out cur i c)
+  (setq out nil cur "" i 1)
+  (while (<= i (strlen s))
+    (setq c (substr s i 1))
+    (if (= c "|")
+      (progn (setq out (cons cur out)) (setq cur ""))
+      (setq cur (strcat cur c))
+    )
+    (setq i (1+ i))
+  )
+  (reverse (cons cur out))
+)
+
+;; 总宽/角点/基点 -> 一个 xdata 字符串
+(defun bms:enctag (totw corner bp)
+  (strcat (rtos totw 2 6) "|" corner "|" (rtos (car bp) 2 6) "|" (rtos (cadr bp) 2 6))
+)
+
+;; xdata 字符串 -> (总宽 角点 基点)；格式不对（不是 4 段）返回 nil
+(defun bms:dectag (s / ps)
+  (setq ps (bms:splitpipe s))
+  (if (/= (length ps) 4)
+    nil
+    (list (atof (nth 0 ps)) (nth 1 ps) (list (atof (nth 2 ps)) (atof (nth 3 ps))))
+  )
+)
+
+;; 给单个实体绑 xdata（标签串已算好）；原来是裸调用 entmod，一旦在
+;; 某个实体上失败会直接抛错炸掉整条画表流程，还啥提示都没有——改成
+;; 包 vl-catch-all-apply，失败只记一条调试信息，不影响其它实体继续打标记。
+(defun bms:tagent (e tagstr / r)
+  (setq r
+    (vl-catch-all-apply
+      'entmod
+      (list (append (entget e) (list (list -3 (list "BOMTAB" (cons 1000 tagstr))))))
+    )
+  )
+  (if (vl-catch-all-error-p r)
+    (bms:dbg (strcat "entmod 写 xdata 失败：" (vl-catch-all-error-message r)))
+  )
+)
+
+;; 给一批实体统一绑同一份「总宽/角点/基点」标记
+(defun bms:tagall (ents totw corner bp / tagstr ok)
+  (bms:regapp)
+  (setq tagstr (bms:enctag totw corner bp))
+  (bms:dbg (strcat "tagall 开始，实体数 " (itoa (length ents)) "，标记串 " tagstr))
+  (setq ok 0)
+  (foreach e ents
+    (bms:tagent e tagstr)
+    (setq ok (1+ ok))
+  )
+  (bms:dbg (strcat "tagall 完成，尝试打标记 " (itoa ok) " 个实体（个别失败已单独记录）"))
+)
+
+;; 查图上「上次生成的材料表」：不用 ssget 按 xdata 过滤——这套环境里
+;;   ssget 配 -3（xdata）过滤条件不可靠（之前是空结果不老实返回 nil，
+;;   导致没表也误判成"有表"；换个角度看，也可能是该匹配的反而匹配不
+;;   到），干脆绕开它：编组名字本身就是 "BOMTAB-<时间戳>"（bms:gname
+;;   生成、bms:mkgroup 落地），直接在文档的 Groups 集合里按名字前缀
+;;   找——这条路已经在"删旧编组"那段代码里用过、确认好使，不依赖
+;;   ssget 的过滤能力。
+;;   有 -> 从编组第一个实体的 xdata 解出 (总宽 角点 基点)，删掉旧表
+;;         全部实体和编组，返回这个列表；
+;;   没有 / xdata 解不出来 -> 返回 nil，交给上层走原来的弹窗+取点流程
+;;         （xdata 解不出来时也不动图上任何东西，避免误删认不出的东西）。
+(defun bms:findprev ( / doc hitgrp allgrps grp gname it ents e e0 ed xd tag ret err gcnt g gents e2)
+  (setq ret nil)
+  (bms:regapp)
+  (bms:dbg "findprev 开始")
+  ;; ★ 全部探测逻辑包进 vl-catch-all-apply：万一环境里哪个 ActiveX
+  ;;   调用又不老实，出了任何错都只当「没有上次的表」处理，安全退回
+  ;;   原来的弹窗+取点流程，不让探测环节干扰主流程。
+  (setq err
+    (vl-catch-all-apply
+      (function
+        (lambda ()
+          (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+          ;; 1. 在 Groups 集合里找名字以 "BOMTAB-" 开头的编组；正常只会
+          ;;    有一个，如果有多个（比如改之前的 bug 版本测试时留下的
+          ;;    残留），全部记下来：解析用最后遍历到的那个，真清理的
+          ;;    时候会把全部残留一起清掉，不只清命中的那一个。
+          (setq hitgrp nil allgrps nil gcnt 0)
+          (vlax-for grp (vla-get-Groups doc)
+            (setq gcnt (1+ gcnt))
+            (setq gname (vla-get-Name grp))
+            (bms:dbg (strcat "遍历到编组：" gname))
+            (if (and (>= (strlen gname) 7) (= (substr gname 1 7) "BOMTAB-"))
+              (progn (setq hitgrp grp) (setq allgrps (cons grp allgrps)) (bms:dbg ">>> 命中该编组"))
+            )
+          )
+          (bms:dbg (strcat "Groups 集合共 " (itoa gcnt) " 个编组，其中 BOMTAB- 编组 " (itoa (length allgrps)) " 个"))
+          (if hitgrp
+            (progn
+              ;; 2. 编组对象本身就能直接 vlax-for 枚举成员实体（比再调
+              ;;    GetItems 手动摆弄 safearray 更直接、更不容易在别的
+              ;;    CAD 实现上出岔子），取到实体名列表后从第一个实体上
+              ;;    读 xdata 解出参数。
+              (setq ents nil)
+              (vlax-for it hitgrp
+                (setq ents (cons (vlax-vla-object->ename it) ents))
+              )
+              (bms:dbg (strcat "编组成员实体数：" (itoa (length ents))))
+              (if ents
+                (progn
+                  (setq e0 (car ents))
+                  (setq ed (entget e0 (list "BOMTAB")))
+                  ;; entget 读回来的 -3 xdata 外面还包一层"按应用名分组"的
+                  ;; 列表，形如 (("BOMTAB" (1000 . "...")))，要先按应用名
+                  ;; 取出那一组，再从组里取 1000 号字符串——之前少解了这层，
+                  ;; 一直取到 nil，这才是真正原因（不是环境问题）。
+                  (setq xd (cdr (assoc -3 ed)))
+                  (bms:dbg (strcat "该实体 -3 xdata：" (if xd (vl-prin1-to-string xd) "nil（没读到）")))
+                  (setq tag (cdr (assoc 1000 (cdr (assoc "BOMTAB" xd)))))
+                  (bms:dbg (strcat "解出 1000 号字符串：" (if tag tag "nil")))
+                  (setq ret (if tag (bms:dectag tag) nil))
+                  (bms:dbg (strcat "dectag 结果：" (if ret (vl-prin1-to-string ret) "nil（格式不对/解析失败）")))
+                )
+                (bms:dbg "编组成员实体数为 0，vlax-for 没枚举到任何东西")
+              )
+              ;; 3. 解出参数了才清掉旧表（解不出来就留着不动，交给上层
+              ;;    走原来的交互流程，图上什么都不碰）。清理时把全部
+              ;;    BOMTAB- 编组一起清掉，不只清命中解析的那一个——
+              ;;    避免以前版本留下的重复表越攒越多。
+              (if ret
+                (progn
+                  (bms:dbg (strcat "参数解出成功，准备清掉全部 " (itoa (length allgrps)) " 个 BOMTAB- 编组"))
+                  (foreach g allgrps
+                    (setq gents nil)
+                    (vlax-for it g (setq gents (cons (vlax-vla-object->ename it) gents)))
+                    (foreach e2 gents
+                      (if (not (vl-catch-all-error-p (vl-catch-all-apply 'entget (list e2))))
+                        (entdel e2)
+                      )
+                    )
+                    (vl-catch-all-apply (function (lambda () (vla-Delete g))))
+                  )
+                  (bms:dbg "旧表已全部清掉")
+                )
+              )
+            )
+            (bms:dbg "没有名字以 BOMTAB- 开头的编组")
+          )
+        )
+      )
+    )
+  )
+  (if (vl-catch-all-error-p err)
+    (progn
+      (bms:dbg (strcat ">>> 探测过程整体报错：" (vl-catch-all-error-message err)))
+      (setq ret nil)
+    )
+  )
+  (bms:dbg (strcat "findprev 返回：" (if ret (vl-prin1-to-string ret) "nil")))
+  ret
+)
+
+;; ------------------------------------------------------------
+;; 「出材料表」参数弹窗：总宽度 + 基点角点
+;;   真正原因：单选按钮不绑 action_tile、只靠关窗前被动 get_tile 去读，
+;;   在这套环境里读不到用户实际点击后的状态（跟本文件行编辑面板里
+;;   edit_box 必须绑 action 才能读到最新值是同一类坑，第 457-458 行
+;;   注释早就点破过）。修法是同一套：每个单选按钮都绑 action_tile，
+;;   点击当下就把状态【主动】写进 Lisp 全局变量，取值只认这几个变量，
+;;   全程不再对这几个 key 做“关窗后 get_tile”。
+;; ------------------------------------------------------------
+(setq *bmt:optw* nil *bmt:optc* nil *bmt:optcw* nil)
+
+(defun bms:mkoptdcl (fn / h)
+  (setq h (open fn "w"))
+  (if (null h)
+    nil
+    (progn
+      (write-line "bmt_opt : dialog {" h)
+      (write-line "  label = \"出材料表 · 参数\";" h)
+      (write-line "  : radio_column {" h)
+      (write-line "    label = \"表格总宽度\";" h)
+      (write-line "    : radio_button { key = \"w180\"; label = \"180\"; }" h)
+      (write-line "    : radio_button { key = \"w90\"; label = \"90\"; value = \"1\"; }" h)
+      (write-line "    : radio_button { key = \"wzdy\"; label = \"自定义：\"; }" h)
+      (write-line "  }" h)
+      (write-line "  : row {" h)
+      (write-line "    : text { label = \"自定义宽度：\"; }" h)
+      (write-line "    : edit_box { key = \"wcustom\"; edit_width = 8; }" h)
+      (write-line "  }" h)
+      (write-line "  : radio_column {" h)
+      (write-line "    label = \"表格基点\";" h)
+      (write-line "    : radio_button { key = \"ctr\"; label = \"右上角（表头在上）\"; value = \"1\"; }" h)
+      (write-line "    : radio_button { key = \"cbr\"; label = \"右下角（表头在下）\"; }" h)
+      (write-line "  }" h)
+      (write-line "  : row {" h)
+      (write-line "    : button { key = \"accept\"; label = \"确定\"; is_default = true; }" h)
+      (write-line "    : button { key = \"cancel\"; label = \"取消\"; is_cancel = true; }" h)
+      (write-line "  }" h)
+      (write-line "}" h)
+      (close h)
+      T
+    )
+  )
+)
+
+;; 弹一次参数窗，返回 (总宽度 . 角点"TR"/"BR")；取消 / 出错 / 输错自定义宽度都返回 nil
+;;   自定义宽度没填或填了非法值时用 alert 提醒，并重新弹出同一个窗（不当成取消）
+(defun bms:optdlg ( / fn id go ret r totw corner s)
+  (setq fn (bms:tmppath "bmt_opt.dcl") go T ret nil)
+  (if (null (bms:mkoptdcl fn))
+    (princ (strcat "\n写不出 DCL 文件：" fn))
+    (while go
+      (setq id (load_dialog fn))
+      (if (< id 0)
+        (progn (princ "\n加载对话框失败。") (setq go nil))
+        (if (not (new_dialog "bmt_opt" id))
+          (progn (unload_dialog id) (princ "\n打开对话框失败。") (setq go nil))
+          (progn
+            ;; ★ 默认值先按 DCL 里写死的 value="1" 对齐（90 / 右上角），
+            ;;   用户不点任何按钮直接「确定」时也有正确的默认结果——
+            ;;   不依赖、也不需要事后再去 get_tile 这两个 key。
+            (setq *bmt:optw* "90" *bmt:optc* "TR" *bmt:optcw* "")
+            ;; ★ 每个单选按钮点击的瞬间就把选择写进变量，不等关窗后再读
+            (action_tile "w180" "(setq *bmt:optw* \"180\")")
+            (action_tile "w90"  "(setq *bmt:optw* \"90\")")
+            (action_tile "wzdy" "(setq *bmt:optw* \"ZDY\")")
+            (action_tile "ctr"  "(setq *bmt:optc* \"TR\")")
+            (action_tile "cbr"  "(setq *bmt:optc* \"BR\")")
+            (action_tile "wcustom" "(setq *bmt:optcw* (get_tile \"wcustom\"))")
+            (action_tile "accept" "(done_dialog 1)")
+            (action_tile "cancel" "(done_dialog 0)")
+            (setq r (vl-catch-all-apply 'start_dialog nil))
+            (if (vl-catch-all-error-p r) (setq r 0))
+            (if (/= r 1)
+              (progn (unload_dialog id) (setq go nil))
+              (progn
+                (setq corner *bmt:optc*)
+                (setq totw
+                  (cond
+                    ((= *bmt:optw* "180") 180.0)
+                    ((= *bmt:optw* "90") 90.0)
+                    (T (setq s (bms:trim *bmt:optcw*))
+                       (if (= s "") nil (atof s)))
+                  )
+                )
+                (unload_dialog id)
+                (if (or (null totw) (<= totw (* 2.0 *bmt:fixw*)))
+                  (alert "自定义总宽度要填一个数，并且要大于序号+数量固定宽度之和，请重新输入。")
+                  (progn (setq ret (cons totw corner)) (setq go nil))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  ret
+)
+
+;; 出材料表本体：按给定 总宽/角点/基点 智能分列（超宽再问，upd=T 时
+;; 不问、直接压缩文字宽度凑下）-> 画图 -> 编组 -> 打「记忆」标记。
+;; upd 只影响「要不要交互问超宽处理方式」和结尾提示语，不影响画法。
+(defun bms:drawtable (rows n totw corner bp upd / x0 x1 x2 x3 x4
+                       maxnm maxms wf remain need c wname wms
+                       ymax ymin rowsN ents i k top bot cy r xx)
+  ;; 1. 智能分列：名称 / 型号规格 两列各自的最长内容，定占比
+  (setq maxnm (bms:txtw "名称" *bmt:th*) maxms (bms:txtw "型号规格" *bmt:th*))
+  (setq i 0)
+  (while (< i n)
+    (setq r (bms:tabrow i))
+    (setq maxnm (max maxnm (bms:txtw (nth 0 r) *bmt:th*)))
+    (setq maxms (max maxms (bms:txtw (nth 1 r) *bmt:th*)))
+    (setq i (1+ i))
+  )
+  (setq wf *bmt:wf*)
+  (setq remain (- totw (* 2.0 *bmt:fixw*)))
+  (setq need (* (+ maxnm maxms) wf))
+  (if (> need remain)
+    (progn
+      (if upd
+        ;; 按原参数原位置更新，全程不交互：超宽直接按「压缩文字宽度」处理，
+        ;; 不问、不弹提示，保住原来选定的总宽度。
+        (setq c "B")
+        (progn
+          (initget "A B")
+          (setq c (getkword
+                    (strcat "\n按当前文字宽度，内容约需总宽 "
+                            (rtos (+ need (* 2.0 *bmt:fixw*)) 2 1)
+                            "，超出所选的 " (rtos totw 2 1)
+                            "。是否 [采用合适宽度(A)/压缩文字宽度(B)] <B>: ")))
+          ;; 不响应（回车/点到图上等）时必须默认「压缩文字宽度(B)」，
+          ;; 保住用户在弹窗里选定的总宽度——默认走 A 会静默把
+          ;; 选定的总宽度改掉，这正是"总宽度设置不生效"的根源。
+          (if (null c) (setq c "B"))
+        )
+      )
+      (if (= c "A")
+        (progn
+          (setq totw (+ need (* 2.0 *bmt:fixw*)))
+          (setq remain (- totw (* 2.0 *bmt:fixw*)))
+        )
+        ;; 压缩文字宽度因子，使 (maxnm+maxms)*wf 恰好等于 remain；
+        ;; 之前这里多乘了一次旧 wf，会把字压得比实际需要小很多。
+        (setq wf (/ remain (+ maxnm maxms)))
+      )
+    )
+  )
+  (if (equal (+ maxnm maxms) 0.0 1e-6)
+    (setq wname (/ remain 2.0) wms (/ remain 2.0))
+    (progn
+      (setq wname (* remain (/ maxnm (+ maxnm maxms))))
+      (setq wms (- remain wname))
+    )
+  )
+  ;; 2. 几何：从基点（右边）往左排列 序号|名称|型号规格|数量
+  (setq x4 (car bp) x3 (- x4 *bmt:fixw*) x2 (- x3 wms)
+        x1 (- x2 wname) x0 (- x1 *bmt:fixw*))
+  (setq rowsN (1+ n))
+  (if (= corner "TR")
+    (setq ymax (cadr bp) ymin (- ymax (* rowsN *bmt:rowh*)))
+    (setq ymin (cadr bp) ymax (+ ymin (* rowsN *bmt:rowh*)))
+  )
+  (setq ents nil)
+  ;; 竖线（5 条）+ 横线（rowsN+1 条）
+  (foreach xx (list x0 x1 x2 x3 x4)
+    (setq ents (cons (bms:mkline (list xx ymin) (list xx ymax)) ents))
+  )
+  (setq i 0)
+  (while (<= i rowsN)
+    (setq ents (cons (bms:mkline (list x0 (- ymax (* i *bmt:rowh*)))
+                                 (list x4 (- ymax (* i *bmt:rowh*)))) ents))
+    (setq i (1+ i))
+  )
+  ;; 表头文字（四个都居中）
+  (setq k (bms:slotk 0 corner rowsN) top (- ymax (* k *bmt:rowh*))
+        bot (- top *bmt:rowh*) cy (/ (+ top bot) 2.0))
+  (setq ents (cons (bms:mktext (list (/ (+ x0 x1) 2.0) cy) "序号" *bmt:th* wf 1) ents))
+  (setq ents (cons (bms:mktext (list (/ (+ x1 x2) 2.0) cy) "名称" *bmt:th* wf 1) ents))
+  (setq ents (cons (bms:mktext (list (/ (+ x2 x3) 2.0) cy) "型号规格" *bmt:th* wf 1) ents))
+  (setq ents (cons (bms:mktext (list (/ (+ x3 x4) 2.0) cy) "数量" *bmt:th* wf 1) ents))
+  ;; 数据行文字：序号/数量 居中，名称/型号规格 左对齐
+  (setq i 0)
+  (while (< i n)
+    (setq r (bms:tabrow i))
+    (setq k (bms:slotk (1+ i) corner rowsN) top (- ymax (* k *bmt:rowh*))
+          bot (- top *bmt:rowh*) cy (/ (+ top bot) 2.0))
+    (setq ents (cons (bms:mktext (list (/ (+ x0 x1) 2.0) cy) (itoa (1+ i)) *bmt:th* wf 1) ents))
+    (setq ents (cons (bms:mktext (list (+ x1 *bmt:pad*) cy) (nth 0 r) *bmt:th* wf 0) ents))
+    (setq ents (cons (bms:mktext (list (+ x2 *bmt:pad*) cy) (nth 1 r) *bmt:th* wf 0) ents))
+    (setq ents (cons (bms:mktext (list (/ (+ x3 x4) 2.0) cy) (nth 2 r) *bmt:th* wf 1) ents))
+    (setq i (1+ i))
+  )
+  (bms:mkgroup ents)
+  ;; 3. 打「记忆」标记，供下次出材料表时认出这张表、原位置更新用
+  (bms:tagall ents totw corner bp)
+  (princ (strcat "\n[出材料表] 已" (if upd "按原参数原位置更新" "画出") " " (itoa n)
+                  " 行材料表（已编组），没存盘。"))
+)
+
+;; 出材料表主流程：
+;;   先查图上有没有「上次生成的材料表」——
+;;     有 -> 直接按原参数原位置重画一遍（先删旧表），不弹窗、不取点；
+;;     没有 -> 照旧弹一个窗问总宽+基点角点 -> 到图上点基点。
+;;   参数备齐后统一交给 bms:drawtable 智能分列、画图、编组。
+;; 返回 T = 表格已画出（成功） / nil = 没数据、取消或没取到基点
+(defun bms:mktable ( / rows n opt totw corner bp prev ok)
+  (setq *bms:tabrows* (vl-remove-if 'bms:blankrow *bms:order*))
+  (setq rows *bms:rows* n (length *bms:tabrows*) ok nil)
+  (if (= n 0)
+    (princ "\n[出材料表] 没有数据，先汇总再出表。")
+    (progn
+      (setq prev (bms:findprev))
+      (bms:dbg (strcat "mktable 拿到 prev = " (if prev (vl-prin1-to-string prev) "nil")))
+      (if prev
+        (progn
+          (setq totw (nth 0 prev) corner (nth 1 prev) bp (nth 2 prev))
+          (princ "\n[出材料表] 检测到上次生成的材料表，按原参数原位置更新...")
+          (bms:drawtable rows n totw corner bp T)
+          (setq ok T)
+        )
+        (progn
+          ;; 1. 一个界面问完总宽度（180/90/自定义）和基点角点（右上/右下）
+          (setq opt (bms:optdlg))
+          (if (null opt)
+            (princ "\n[出材料表] 已取消，图没动。")
+            (progn
+              (setq totw (car opt) corner (cdr opt))
+              ;; 2. 到图上点基点（右上角 / 右下角，跟弹窗里选的一致）
+              (setq bp (getpoint
+                         (strcat "\n指定表格基点（" (if (= corner "TR") "右上角" "右下角") "）: ")))
+              (if (null bp)
+                (princ "\n[出材料表] 没有指定基点，已取消。")
+                (progn
+                  (bms:drawtable rows n totw corner bp nil)
+                  (setq ok T)
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  ok
+)
+
+;; ================================================================
+;; 六、入口
+;; ================================================================
+
+;; 汇总（只读，不弹窗；给核对 / 脚本用）—— 内核没就位返回 nil
+(defun bms:rows () (if (bms:ensure) (bms:collect) nil))
+
+;; 命令入口
+(defun bms:run ( / rows n ok)
+  (if (null (bms:ensure))
+    (princ "\n[BOMSUM] 内核没就位：先 load 属性块-批量填数.lsp（本文件同目录）。")
+    (progn
+      (setq rows (bms:collect))
+      (cond
+        ((null rows)
+         (princ (strcat "\n[BOMSUM] 没统计到元件 —— 柜块（带「" *bms:tag-cab*
+                        "」标签）与表头块（带「" *bms:tag-hdr*
+                        "」标签）都得在图上，图表未改动。")))
+        (T
+         (setq n (length rows))
+         (princ (strcat "\nBOMSUM：全图汇出 " (itoa n) " 行元件材料表（数量 = 全图汇总）。"))
+         (setq ok (bms:ui rows (strcat "元件材料表汇总 · " (itoa n) " 行")))
+         (cond
+           ((eq ok T) (princ (strcat SEP (bms:write))))
+           ((eq ok 'table)
+            ;; 出材料表成功后，紧接着自动执行一次「写入」，把面板当前值批量回写属性块；
+            ;; 出材料表本身取消/没数据/没取到基点时不写入，图没动。
+            (if (bms:mktable)
+              (princ (strcat SEP (bms:write)))
+            )
+           )
+           (T (princ "\n取消了，图没动。"))
+         )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:BOMSUM () (bms:run))
+(defun c:BOMS () (bms:run))
+
+(princ "\n属性块-元件材料表汇总.lsp 已加载。命令 BOMSUM —— 全图元件材料表汇总，改完按「写入」批量回写所有属性块。")
+(princ)

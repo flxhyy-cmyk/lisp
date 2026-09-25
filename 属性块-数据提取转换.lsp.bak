@@ -1642,65 +1642,8 @@
   (princ))
 
 ;; ============================================================
-;; TVR 命令: 属性值精确统一（点选单个属性文字 -> 逐个统一）
-;; 与 TZR 的区别：TZR 是"整块"级别（选源块的全部属性 -> 
-;; 框选目标块，按TAG匹配批量复制所有共同属性）；
-;; TVR 细化到"单个属性文字"级别：只点选源属性文字本身作为基准值，
-;; 之后逐个点选目标属性文字，只有被鼠标点中的那个属性文字才会
-;; 被统一为源值，未点选到的属性/其他块一律不受影响。
-;; 用 nentsel 而非 entsel：属性块本身若嵌套在更外层的块里，
-;; entsel 只能选到最外层 INSERT，nentsel 能穿透嵌套直接选中
-;; 里面真正的 ATTRIB 实体（不嵌套时行为与 entsel 一致）。
-;; ============================================================
-(defun c:TVR (/ old-cmdecho src-sel src-ent src-ed src-tag src-val
-              tgt-sel tgt-ent tgt-ed tgt-tag tgt-owner success-count)
-  (setq old-cmdecho (getvar "CMDECHO"))
-  (setvar "CMDECHO" 0)
-  (princ "\n=== 属性值精确统一 TVR（点选单个属性文字 -> 逐个统一）===")
-
-  ;; 1. 点选源属性文字（必须直接点中 ATTRIB 本身，不是整个块；
-  ;;    nentsel 可穿透嵌套块选中里面真正的属性文字）
-  (setq src-sel (nentsel "\n请点选源属性文字(单个): "))
-  (if (null src-sel)
-    (princ "\n未选择源属性文字，已取消。")
-    (progn
-      (setq src-ent (car src-sel) src-ed (entget src-ent))
-      (if (/= (cdr (assoc 0 src-ed)) "ATTRIB")
-        (princ "\n所选对象不是属性文字(ATTRIB)，请直接点选具体的属性文本，已取消。")
-        (progn
-          (setq src-tag (cdr (assoc 2 src-ed))
-                src-val (cdr (assoc 1 src-ed)))
-          (princ (strcat "\n源属性: TAG=" src-tag "  值=\"" src-val "\""))
-
-          ;; 2. 循环点选目标属性文字，逐个统一为源值；直接回车/ESC结束
-          (setq success-count 0)
-          (while (setq tgt-sel (nentsel "\n请点选要统一的目标属性文字(直接回车结束): "))
-            (setq tgt-ent (car tgt-sel) tgt-ed (entget tgt-ent))
-            (cond
-              ((/= (cdr (assoc 0 tgt-ed)) "ATTRIB")
-               (princ "\n  所选对象不是属性文字，跳过。"))
-              ((equal tgt-ent src-ent)
-               (princ "\n  与源属性是同一个对象，跳过。"))
-              (T
-               (setq tgt-tag   (cdr (assoc 2 tgt-ed))
-                     tgt-owner (cdr (assoc 330 tgt-ed)))
-               (entmod (subst (cons 1 src-val) (assoc 1 tgt-ed) tgt-ed))
-               (if tgt-owner (entupd tgt-owner))
-               (princ (strcat "\n  已统一 TAG=" tgt-tag " -> \"" src-val "\""))
-               (setq success-count (1+ success-count)))
-            )
-          )
-          (princ (strcat "\nTVR 完成: 共统一 " (itoa success-count) " 处属性文字。"))
-        )
-      )
-    )
-  )
-  (setvar "CMDECHO" old-cmdecho)
-  (princ))
-
-;; ============================================================
 ;; 自动加载提示
 ;; ============================================================
-(princ "\n属性块数据管理器已加载。TAG 启动；绘制表格后可输入 TAE 导出到 Excel 编辑，TAR 从 Excel 更新表格/属性块，TAA 从表格回写属性块，TZR 复制属性值（源块->目标块，整块级别），TZV 互换两个属性块的属性值，TVR 精确统一单个属性文字（点选式，细化到具体文本）。")
+(princ "\n属性块数据管理器已加载。TAG 启动；绘制表格后可输入 TAE 导出到 Excel 编辑，TAR 从 Excel 更新表格/属性块，TAA 从表格回写属性块，TZR 复制属性值（源块->目标块），TZV 互换两个属性块的属性值。")
 (princ)
 

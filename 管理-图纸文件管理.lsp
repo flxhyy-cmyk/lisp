@@ -29,6 +29,20 @@
   )
 )
 
+;; 保存已展开的子文件夹完整路径到环境变量（跨会话持久）；无子文件夹时传nil，保存为空字符串
+(defun save-subfolder-wdg (subfolder)
+  (setenv "WDG_LAST_SUBFOLDER" (if subfolder subfolder ""))
+)
+
+;; 读取上次保存的子文件夹完整路径，没有则返回nil
+(defun load-subfolder-wdg ( / saved)
+  (setq saved (getenv "WDG_LAST_SUBFOLDER"))
+  (if (and saved (/= saved ""))
+    saved
+    nil
+  )
+)
+
 
 ;; ============================================================
 ;;  收藏夹持久化（分段存储，防止单键超 REG_SZ 上限 32767 字节）
@@ -183,13 +197,102 @@
   )
 )
 
-;; 刷新收藏夹列表显示（带文件夹图标）
-(defun wdg-refresh-fav-list ( / fav-list)
-  (setq fav-list (wdg-load-favorites))
-  (setq wdg_favorites fav-list)
-  (start_list "fav_list")
+;; ============================================================
+;;  收藏夹树形排序：若两个收藏夹存在上下级关系，子级排在父级下方并缩进显示
+;; ============================================================
+
+;; 将字符串重复n次拼接（AutoLISP无内置repeat-string）
+(defun wdg-repeat-str (str n / result i)
+  (setq result "")
+  (setq i 0)
+  (while (< i n)
+    (setq result (strcat result str))
+    (setq i (1+ i))
+  )
+  result
+)
+
+;; 判断path是否是ancestor的下级路径（不含自身），不区分大小写
+;; 两者均按去掉末尾反斜杠后比较
+(defun wdg-is-descendant-of (path ancestor / p a)
+  (setq p (strcase (vl-string-right-trim "\\" path)))
+  (setq a (strcase (vl-string-right-trim "\\" ancestor)))
+  (and (/= p a)
+       (>= (strlen p) (1+ (strlen a)))
+       (= a (substr p 1 (strlen a)))
+       (= (substr p (1+ (strlen a)) 1) "\\")
+  )
+)
+
+;; 在fav-list中查找path"最近"的收藏夹祖先（路径最长的那个），没有则返回nil
+(defun wdg-find-nearest-fav-ancestor (path fav-list / best best-len f)
+  (setq best nil)
+  (setq best-len 0)
   (foreach f fav-list
-    (add_list (strcat "  \004  " (wdg-fav-display-name f) "  "))
+    (if (and (/= (strcase (vl-string-right-trim "\\" f))
+                 (strcase (vl-string-right-trim "\\" path)))
+             (wdg-is-descendant-of path f)
+             (> (strlen f) best-len))
+      (progn
+        (setq best f)
+        (setq best-len (strlen f))
+      )
+    )
+  )
+  best
+)
+
+;; 判断"查找到的最近祖先"found是否与parent一致（均可能为nil，代表根级）
+(defun wdg-same-fav-parent (found parent)
+  (cond
+    ((and (not found) (not parent)) T)
+    ((and found parent)
+     (= (strcase (vl-string-right-trim "\\" found))
+        (strcase (vl-string-right-trim "\\" parent)))
+    )
+    (T nil)
+  )
+)
+
+;; 递归构建树形显示顺序，返回 ((path . depth) (path . depth) ...) 的前序遍历列表
+;; parent为nil表示从根级开始
+(defun wdg-build-fav-tree (parent fav-list depth / children result c)
+  (setq children '())
+  (foreach f fav-list
+    (if (wdg-same-fav-parent (wdg-find-nearest-fav-ancestor f fav-list) parent)
+      (setq children (cons f children))
+    )
+  )
+  ;; 同级按显示名排序（不区分大小写）
+  (setq children (vl-sort children
+    (function (lambda (a b)
+      (< (strcase (wdg-fav-display-name a)) (strcase (wdg-fav-display-name b)))))))
+  (setq result '())
+  (foreach c children
+    (setq result (append result (list (cons c depth))))
+    (setq result (append result (wdg-build-fav-tree c fav-list (1+ depth))))
+  )
+  result
+)
+
+;; 对收藏夹列表按上下级关系整理为树形顺序，返回 ((path . depth) ...) 列表
+(defun wdg-sort-favorites-tree (fav-list)
+  (wdg-build-fav-tree nil fav-list 0)
+)
+
+;; 刷新收藏夹列表显示（存在上下级关系的文件夹以树形缩进显示，带文件夹图标）
+(defun wdg-refresh-fav-list ( / fav-list tree-list pair depth path)
+  (setq fav-list (wdg-load-favorites))
+  (setq tree-list (wdg-sort-favorites-tree fav-list))
+  ;; wdg_favorites 按树形显示顺序保存完整路径，供列表选中按下标取值使用
+  (setq wdg_favorites (mapcar 'car tree-list))
+  (start_list "fav_list")
+  (foreach pair tree-list
+    (setq path (car pair))
+    (setq depth (cdr pair))
+    (add_list
+      (strcat "  " (wdg-repeat-str "    " depth) "\004  " (wdg-fav-display-name path) "  ")
+    )
   )
   (end_list)
 )
@@ -364,6 +467,8 @@
 
 ;; 写入切换对文件，供 WDV 使用
 ;; 格式: source_id|dest_path   source_id 可为完整路径或 *UNSAVED*:DrawingX.dwg
+;; 采用追加写入（而非覆盖），使同一源文件可累积打开多个目标文件的历史记录，
+;; 供 WDV 命令在"一个源打开多个目标"时列出全部可切换目标供选择
 (defun wdg-write-switch-pair (source-path dest-path / pair-path fh)
   (if dest-path
     (progn
@@ -371,7 +476,7 @@
         (setq source-path (strcat "*UNSAVED*:" (getvar "DWGNAME")))
       )
       (setq pair-path (strcat (getvar "TEMPPREFIX") "wdg_switch_pair.txt"))
-      (setq fh (open pair-path "w"))
+      (setq fh (open pair-path "a"))
       (write-line (strcat source-path "|" dest-path) fh)
       (close fh)
     )
@@ -466,6 +571,18 @@
         "          key = \"save_btn\";"
         "          fixed_width = true;"
         "          width = 6;"
+        "        }"
+        "        : button {"
+        "          label = \"删除\";"
+        "          key = \"delete_btn\";"
+        "          fixed_width = true;"
+        "          width = 6;"
+        "        }"
+        "        : button {"
+        "          label = \"重命名\";"
+        "          key = \"rename_btn\";"
+        "          fixed_width = true;"
+        "          width = 7;"
         "        }"
         "        : button {"
         "          label = \"缓存\";"
@@ -733,15 +850,318 @@
 
 
 ;; ============================================================
+;;  删除确认对话框（通过 Windows Script Host 弹出是/否弹窗）
+;;  返回 T=删除  nil=取消
+;; ============================================================
+
+(defun wdg-confirm-delete (filename / wsh result)
+  (setq wsh (vlax-create-object "WScript.Shell"))
+  (if wsh
+    (progn
+      (setq result
+        (vlax-invoke-method wsh 'Popup
+          (strcat "确定要删除该DWG文件吗？此操作不可恢复！\n\n" filename)
+          0
+          "WDG - 删除确认"
+          4  ;; 4 = vbYesNo
+        )
+      )
+      (vlax-release-object wsh)
+      ;; Popup 返回值: 6=Yes, 7=No, -1=超时
+      (= result 6)
+    )
+    ;; wsh 创建失败，默认不删除
+    nil
+  )
+)
+
+;; ============================================================
+;;  删除当前选中的DWG文件
+;;  支持三种选中来源：左列DWG文件("dir")、右列子文件夹DWG文件("sub")、
+;;  搜索结果("search")——判断依据与"打开文件"逻辑保持一致
+;; ============================================================
+
+(defun wdg-delete-selected-dwg ( / folder-path selected-file full-path
+                                   cur-open-path wdg_tmp_idx3)
+  (setq full-path nil)
+
+  (cond
+    ;; 搜索结果模式
+    ((and (equal wdg_open_source "search")
+          wdg_search_sel_index (/= wdg_search_sel_index "")
+          wdg_search_results)
+      (setq wdg_tmp_idx3 (atoi wdg_search_sel_index))
+      (if (< wdg_tmp_idx3 (length wdg_search_results))
+        (setq full-path (nth wdg_tmp_idx3 wdg_search_results))
+      )
+    )
+    ;; 右列：子文件夹里的DWG文件
+    ((and (equal wdg_open_source "sub")
+          wdg_sub_sel_index (/= wdg_sub_sel_index "")
+          wdg_sub_folder)
+      (setq selected-file (nth (atoi wdg_sub_sel_index) wdg_sub_dwgs))
+      (if selected-file
+        (setq full-path (strcat wdg_sub_folder selected-file))
+      )
+    )
+    ;; 左列：当前文件夹里的DWG文件
+    ((and (equal wdg_open_source "dir")
+          wdg_sel_index (/= wdg_sel_index ""))
+      (setq folder-path (get_tile "folder_edit"))
+      (if (and folder-path (/= folder-path ""))
+        (progn
+          (if (/= (substr folder-path (strlen folder-path)) "\\")
+            (setq folder-path (strcat folder-path "\\"))
+          )
+          (setq selected-file (nth (atoi wdg_sel_index) wdg_cur_dwgs))
+          (if selected-file
+            (setq full-path (strcat folder-path selected-file))
+          )
+        )
+      )
+    )
+  )
+
+  (cond
+    ((not full-path)
+      (set_tile "status_text" "请先选择要删除的DWG文件！")
+    )
+    ((not (findfile full-path))
+      (set_tile "status_text" (strcat "文件不存在: " full-path))
+    )
+    (T
+      ;; 避免误删当前正在编辑的图纸（同一物理文件）
+      (setq cur-open-path (strcat (getvar "DWGPREFIX") (getvar "DWGNAME")))
+      (if (= (strcase full-path) (strcase cur-open-path))
+        (set_tile "status_text" "不能删除当前正在打开的图纸！")
+        (if (wdg-confirm-delete full-path)
+          (if (vl-file-delete full-path)
+            (progn
+              (set_tile "status_text" (strcat "已删除: " (vl-filename-base full-path) ".dwg"))
+              ;; 清空选中状态，避免残留下标指向已删除的文件
+              (setq wdg_open_source nil)
+              (setq wdg_sel_index nil)
+              (setq wdg_sub_sel_index nil)
+              (setq wdg_search_sel_index nil)
+              ;; 刷新受影响的列表（搜索模式下列表来自缓存，不在此处重建，
+              ;; 需要用户点"缓存"按钮重新生成后才会去掉已删除的项）
+              (if (not wdg_is_searching)
+                (progn
+                  (wdg_refresh_dir_list (get_tile "folder_edit"))
+                  (if (and wdg_sub_folder (vl-file-directory-p wdg_sub_folder))
+                    (wdg_refresh_sub_list wdg_sub_folder)
+                  )
+                )
+              )
+            )
+            (set_tile "status_text" "删除失败！（文件可能被占用或只读）")
+          )
+          (set_tile "status_text" "已取消删除。")
+        )
+      )
+    )
+  )
+)
+
+
+;; ============================================================
+;;  重命名：第一步（对话框内）
+;;  确定当前选中的文件，记录到全局变量，然后关闭对话框(result=4)
+;;  真正弹出输入框、执行重命名在对话框关闭之后进行（见 c:WDG 中 result=4 分支）
+;; ============================================================
+
+(defun wdg-request-rename ( / folder-path selected-file full-path
+                              cur-open-path wdg_tmp_idx4)
+  (setq full-path nil)
+
+  (cond
+    ;; 搜索结果模式
+    ((and (equal wdg_open_source "search")
+          wdg_search_sel_index (/= wdg_search_sel_index "")
+          wdg_search_results)
+      (setq wdg_tmp_idx4 (atoi wdg_search_sel_index))
+      (if (< wdg_tmp_idx4 (length wdg_search_results))
+        (setq full-path (nth wdg_tmp_idx4 wdg_search_results))
+      )
+    )
+    ;; 右列：子文件夹里的DWG文件
+    ((and (equal wdg_open_source "sub")
+          wdg_sub_sel_index (/= wdg_sub_sel_index "")
+          wdg_sub_folder)
+      (setq selected-file (nth (atoi wdg_sub_sel_index) wdg_sub_dwgs))
+      (if selected-file
+        (setq full-path (strcat wdg_sub_folder selected-file))
+      )
+    )
+    ;; 左列：当前文件夹里的DWG文件
+    ((and (equal wdg_open_source "dir")
+          wdg_sel_index (/= wdg_sel_index ""))
+      (setq folder-path (get_tile "folder_edit"))
+      (if (and folder-path (/= folder-path ""))
+        (progn
+          (if (/= (substr folder-path (strlen folder-path)) "\\")
+            (setq folder-path (strcat folder-path "\\"))
+          )
+          (setq selected-file (nth (atoi wdg_sel_index) wdg_cur_dwgs))
+          (if selected-file
+            (setq full-path (strcat folder-path selected-file))
+          )
+        )
+      )
+    )
+  )
+
+  (cond
+    ((not full-path)
+      (set_tile "status_text" "请先选择要重命名的DWG文件！")
+    )
+    ((not (findfile full-path))
+      (set_tile "status_text" (strcat "文件不存在: " full-path))
+    )
+    (T
+      (setq cur-open-path (strcat (getvar "DWGPREFIX") (getvar "DWGNAME")))
+      (if (= (strcase full-path) (strcase cur-open-path))
+        (set_tile "status_text" "不能重命名当前正在打开的图纸！")
+        (progn
+          ;; 记录目标文件，关闭对话框后再弹输入框（DCL内部无法弹文本输入框）
+          (setq wdg_rename_target full-path)
+          ;; 持久化保存当前地址栏路径及已展开的子文件夹，
+          ;; 重命名完成后重新打开WDG会按此记录自动恢复选择状态
+          (save-folder-wdg (get_tile "folder_edit"))
+          (save-subfolder-wdg wdg_sub_folder)
+          (done_dialog 4)
+        )
+      )
+    )
+  )
+)
+
+;; ============================================================
+;;  重命名弹窗：创建"输入新文件名"对话框的DCL文件
+;; ============================================================
+
+(defun create-rename-input-dcl-wdg ( / tmp-path dcl-lines fh)
+  (setq tmp-path (strcat (getvar "TEMPPREFIX") "wdg_rename_input.dcl"))
+  ;; 删除旧文件，确保每次都用最新的DCL定义
+  (if (findfile tmp-path)
+    (vl-file-delete tmp-path)
+  )
+  (setq dcl-lines (list
+        "wdg_rename_input_dlg : dialog {"
+        "  label = \"WDG - 重命名文件\";"
+        "  initial_focus = \"new_name_edit\";"
+        "  : text {"
+        "    key = \"old_name_text\";"
+        "    alignment = left;"
+        "  }"
+        "  : spacer { height = 0.3; }"
+        "  : edit_box {"
+        "    label = \"新文件名(不含扩展名):\";"
+        "    key = \"new_name_edit\";"
+        "    edit_width = 40;"
+        "    allow_accept = true;"
+        "  }"
+        "  : spacer { height = 0.3; }"
+        "  ok_cancel;"
+        "}"
+      ))
+  (setq fh (open tmp-path "w"))
+  (foreach line dcl-lines (write-line line fh))
+  (close fh)
+  tmp-path
+)
+
+;; ============================================================
+;;  重命名弹窗：弹出对话框输入新文件名
+;;  base-part : 当前文件名（不含扩展名），用于提示及输入框默认值
+;;  返回值    : 用户输入并确定的新文件名字符串；
+;;              点击"取消"或关闭对话框则返回 nil
+;; ============================================================
+
+(defun wdg-show-rename-input-dlg (base-part / dcl-path dcl-id)
+  (setq wdg_rename_input_ok nil)
+  (setq wdg_rename_new_name nil)
+  (setq dcl-path (create-rename-input-dcl-wdg))
+  (setq dcl-id (load_dialog dcl-path))
+  (if (< dcl-id 0)
+    (princ "\n[WDG] 重命名弹窗加载失败！")
+    (progn
+      (if (not (new_dialog "wdg_rename_input_dlg" dcl-id))
+        (princ "\n[WDG] 重命名弹窗显示失败！")
+        (progn
+          (set_tile "old_name_text" (strcat "当前文件名: " base-part))
+          (set_tile "new_name_edit" base-part)
+          (mode_tile "new_name_edit" 2)  ;; 焦点定位到输入框
+          (action_tile "accept"
+            "(setq wdg_rename_new_name (get_tile \"new_name_edit\"))
+             (setq wdg_rename_input_ok T)
+             (done_dialog 1)"
+          )
+          (action_tile "cancel" "(done_dialog 0)")
+          (start_dialog)
+        )
+      )
+      (unload_dialog dcl-id)
+    )
+  )
+  (if wdg_rename_input_ok wdg_rename_new_name nil)
+)
+
+;; ============================================================
+;;  重命名：第二步（对话框外）
+;;  弹出"重命名"对话框输入新文件名（不含扩展名），校验并执行重命名
+;; ============================================================
+
+(defun wdg-do-rename (old-path / dir-part base-part ext-part new-base new-path)
+  (setq dir-part (vl-filename-directory old-path))
+  (if (/= (substr dir-part (strlen dir-part)) "\\")
+    (setq dir-part (strcat dir-part "\\"))
+  )
+  (setq base-part (vl-filename-base old-path))
+  (setq ext-part  (vl-filename-extension old-path))  ;; 含"."，如 ".dwg"
+
+  (princ (strcat "\n[WDG] 正在重命名: " base-part ext-part))
+  (setq new-base (wdg-show-rename-input-dlg base-part))
+
+  (cond
+    ((or (not new-base) (= new-base ""))
+      (princ "\n[WDG] 重命名已取消（未输入名称）。")
+    )
+    ;; 简单校验非法字符 \ / : * ? " < > |
+    ((vl-some
+       (function (lambda (ch) (vl-string-search ch new-base)))
+       (list "\\" "/" ":" "*" "?" "\"" "<" ">" "|")
+     )
+      (princ "\n[WDG] 重命名失败：文件名不能包含 \\ / : * ? \" < > | 等字符。")
+    )
+    ((= new-base base-part)
+      (princ "\n[WDG] 名称未改变，已取消。")
+    )
+    (T
+      (setq new-path (strcat dir-part new-base ext-part))
+      (if (findfile new-path)
+        (princ (strcat "\n[WDG] 重命名失败：目标文件已存在 -> " new-base ext-part))
+        (if (vl-file-rename old-path new-path)
+          (princ (strcat "\n[WDG] 已重命名为: " new-base ext-part))
+          (princ "\n[WDG] 重命名失败！（文件可能被占用或只读）")
+        )
+      )
+    )
+  )
+)
+
+
+;; ============================================================
 ;;  导出配置到REG文件
 ;; ============================================================
 
-(defun wdg-export-config ( / fav-list last-folder reg-lines fh save-path
+(defun wdg-export-config ( / fav-list last-folder last-subfolder reg-lines fh save-path
                             joined total seg-count idx chunk escaped-chunk)
   ;; 读取收藏夹列表
   (setq fav-list (wdg-load-favorites))
-  ;; 读取上次文件夹路径
+  ;; 读取上次文件夹路径及上次展开的子文件夹路径
   (setq last-folder (getenv "WDG_LAST_FOLDER"))
+  (setq last-subfolder (getenv "WDG_LAST_SUBFOLDER"))
 
   ;; 构建REG文件内容
   (setq reg-lines (list
@@ -769,12 +1189,17 @@
     (setq idx (1+ idx))
   )
 
-  ;; 添加上次文件夹路径（作为注释行，REG文件中;是注释）
+  ;; 添加上次文件夹路径 / 上次展开的子文件夹路径（作为注释行，REG文件中;是注释）
+  ;; 这两项实际存储在AutoCAD环境变量中（setenv/getenv），并非固定注册表路径，
+  ;; 无法直接写成可导入的REG键值，因此以注释形式提示手动执行setenv恢复
   (setq reg-lines (append reg-lines (list
     ""
-    "; WDG上次打开的文件夹路径（存储在AutoCAD环境变量中）"
-    "; 导入此REG文件后，还需在AutoCAD中执行: (setenv \"WDG_LAST_FOLDER\" \"路径\")"
+    "; WDG上次打开的文件夹路径 / 上次展开的子文件夹路径（存储在AutoCAD环境变量中）"
+    "; 导入此REG文件后，还需在AutoCAD中执行以下命令来恢复："
+    "; (setenv \"WDG_LAST_FOLDER\" \"路径\")"
+    "; (setenv \"WDG_LAST_SUBFOLDER\" \"路径\")  （无展开子文件夹时可留空字符串）"
     (strcat "; WDG_LAST_FOLDER = " (wdg-escape-reg-string last-folder))
+    (strcat "; WDG_LAST_SUBFOLDER = " (wdg-escape-reg-string last-subfolder))
   )))
 
   ;; 让用户选择保存位置（getfiled对话框）
@@ -837,6 +1262,7 @@
   (setq wdg_search_results nil) ;; 搜索结果列表
   (setq wdg_search_sel_index nil) ;; 搜索结果选中索引
   (setq wdg_last_search_text "") ;; 搜索去重：上次搜索文本
+  (setq wdg_rename_target nil)   ;; 待重命名文件的完整路径（关闭对话框后使用）
 
   (setq old-cmdecho (getvar "CMDECHO"))
   (setq old-osmode  (getvar "OSMODE"))
@@ -890,6 +1316,20 @@
   (wdg_refresh_dir_list wdg_folder)
   (wdg-refresh-fav-list)
 
+  ;; ---------- 恢复上次关闭时展开的子文件夹（如果有且仍属于当前地址栏文件夹）----------
+  ;; 该记录跨会话持久保存：无论是重命名后重开、正常关闭对话框后再次执行WDG，
+  ;; 还是重启AutoCAD后重新执行WDG，只要子文件夹仍然存在且属于当前文件夹，都会自动恢复展开与选中状态
+  (setq wdg_restore_subfolder (load-subfolder-wdg))
+  (if (and wdg_restore_subfolder
+           (vl-file-directory-p wdg_restore_subfolder)
+           (wdg-subfolder-belongs-to wdg_restore_subfolder wdg_folder))
+    (progn
+      (setq wdg_sub_folder wdg_restore_subfolder)
+      (wdg_refresh_sub_list wdg_sub_folder)
+      (wdg-restore-subfolder-selection wdg_sub_folder)
+    )
+  )
+
   ;; ---------- 回调 ----------
 
   ;; 浏览按钮
@@ -914,6 +1354,16 @@
   ;; 保存按钮：复制当前DWG到地址栏文件夹
   (action_tile "save_btn"
     "(wdg-save-current-dwg)"
+  )
+
+  ;; 删除按钮：删除当前选中的DWG文件（左列/右列/搜索结果均支持）
+  (action_tile "delete_btn"
+    "(wdg-delete-selected-dwg)"
+  )
+
+  ;; 重命名按钮：记录选中文件并关闭对话框(result=4)，在对话框外弹出输入框
+  (action_tile "rename_btn"
+    "(wdg-request-rename)"
   )
 
   ;; 缓存按钮：扫描所有收藏夹文件夹及子文件夹中的DWG文件
@@ -1091,14 +1541,15 @@
     "(setq wdg_fav_sel_index (get_tile \"fav_list\"))
      (if (and wdg_fav_sel_index (/= wdg_fav_sel_index \"\"))
        (progn
-         (setq wdg_favorites (wdg-load-favorites))
+         ;; 直接使用当前 wdg_favorites（与fav_list树形显示顺序一致），不重新从注册表加载，
+         ;; 避免加载出的原始顺序与树形显示顺序不一致导致下标错位、误删其他收藏项
          (setq wdg_fav_to_del (nth (atoi wdg_fav_sel_index) wdg_favorites))
          (if wdg_fav_to_del
            (progn
              (setq wdg_favorites
                (vl-remove-if
                  (function (lambda (x) (equal (strcase x) (strcase wdg_fav_to_del))))
-                 wdg_favorites
+                 (wdg-load-favorites)
                )
              )
              (wdg-save-favorites wdg_favorites)
@@ -1152,8 +1603,25 @@
     )
   )
 
-  ;; ---------- 如果不是导出操作，继续正常逻辑 ----------
-  (if (/= result 3)
+  ;; ---------- 处理重命名操作（result=4） ----------
+  (if (= result 4)
+    (progn
+      ;; 先恢复系统变量，避免递归调用时保存错误的值，并让重命名弹窗能正常交互
+      (setvar "CMDECHO" old-cmdecho)
+      (setvar "OSMODE"  old-osmode)
+      (setvar "FILEDIA" old-filedia)
+      (if wdg_rename_target
+        (wdg-do-rename wdg_rename_target)
+      )
+      ;; 重命名完成后，重新打开WDG对话框
+      (c:WDG)
+      ;; 递归调用后直接返回，不再执行后续逻辑
+      (princ)
+    )
+  )
+
+  ;; ---------- 如果不是导出/重命名操作，继续正常逻辑 ----------
+  (if (and (/= result 3) (/= result 4))
     (progn
 
   ;; ---------- 读取选择 ----------
@@ -1163,6 +1631,9 @@
   (if (and folder-path (/= folder-path ""))
     (save-folder-wdg folder-path)
   )
+
+  ;; ---------- 保存已展开的子文件夹（持久化，跨会话恢复选择状态）----------
+  (save-subfolder-wdg wdg_sub_folder)
 
   ;; ---------- 准备打开文件（但不立即打开）----------
   (setq wdg_pending_open nil)
@@ -1215,8 +1686,8 @@
     (wdg-open-dwg-safe wdg_pending_open)
   )
 
-    ) ;; end of (if (/= result 3) progn
-  ) ;; end of (if (/= result 3))
+    ) ;; end of (if (and (/= result 3) (/= result 4)) progn
+  ) ;; end of (if (and (/= result 3) (/= result 4)))
 
   (princ)
 )
@@ -1270,6 +1741,46 @@
   )
 )
 
+
+;; ============================================================
+;;  判断某子文件夹完整路径的父目录是否与给定文件夹路径一致
+;;  （不区分大小写，忽略末尾反斜杠差异）
+;;  用于恢复选择状态前的校验，防止恢复出与当前地址栏不匹配的子文件夹
+;; ============================================================
+
+(defun wdg-subfolder-belongs-to (subfolder-fullpath parent-folder / sub-trim parent-trim sub-parent)
+  (if (and subfolder-fullpath parent-folder)
+    (progn
+      (setq sub-trim (vl-string-right-trim "\\" subfolder-fullpath))
+      (setq parent-trim (vl-string-right-trim "\\" parent-folder))
+      (setq sub-parent (vl-filename-directory sub-trim))
+      (and sub-parent (= (strcase sub-parent) (strcase parent-trim)))
+    )
+  )
+)
+
+;; ============================================================
+;;  在左列（dir_list）中高亮指定的子文件夹项
+;;  用于恢复"之前已展开子文件夹"的选中状态：
+;;  既用于重命名完成后重新打开对话框，也用于对话框正常关闭/AutoCAD重启后再次打开WDG
+;;  subfolder-fullpath : 子文件夹完整路径（末尾带"\\"）
+;; ============================================================
+
+(defun wdg-restore-subfolder-selection (subfolder-fullpath / sub-name idx)
+  (if (and subfolder-fullpath wdg_sub_folders)
+    (progn
+      ;; 从完整路径中取出子文件夹名称，与 wdg_sub_folders 中的名称匹配
+      (setq sub-name (wdg-fav-display-name subfolder-fullpath))
+      (setq idx (vl-position sub-name wdg_sub_folders))
+      (if idx
+        (progn
+          (set_tile "dir_list" (itoa idx))
+          (set_tile "status_text" (strcat "子文件夹: " sub-name))
+        )
+      )
+    )
+  )
+)
 
 ;; ============================================================
 ;;  获取指定文件夹中的子文件夹列表（纯名称，不含路径）
@@ -1330,9 +1841,12 @@
 
 ;; ============================================================
 ;;  WDV 命令：在源文件和WDG打开的目标文件之间切换
-;;  读取 %TEMP%\wdg_switch_pair.txt，判断当前在源还是目标
+;;  读取 %TEMP%\wdg_switch_pair.txt（追加写入的历史记录），判断当前在源还是目标
+;;  若同一源文件通过WDG打开过多个目标文件，且其中不止一个仍在CAD中打开，
+;;  则弹出选择弹窗列出这些目标文件供选择；弹窗自动默认选中最近打开的一个，
+;;  并自动剔除已经关闭的文件（只列出仍在CAD中打开的目标）
 ;;  支持未保存图纸（标识 *UNSAVED*:DrawingX.dwg）
-;;  两个文件都已打开（WDG 保证），只用 vla-put-ActiveDocument 激活
+;;  所有涉及的文件均已打开（WDG 保证），只用 vla-put-ActiveDocument 激活
 ;;  不涉及任何文件打开操作
 ;; ============================================================
 
@@ -1369,55 +1883,176 @@
   result
 )
 
-(defun c:WDV ( / pair-path fh line sep-pos src-path dest-path cur-path target-doc)
+;; 取文档对象用于在选择弹窗中显示的名称：优先完整路径，未保存图纸则用文档名
+(defun wdv-doc-display-name (doc / fn)
+  (setq fn (vl-catch-all-apply 'vla-get-FullName (list doc)))
+  (if (or (vl-catch-all-error-p fn) (not fn) (= fn ""))
+    (vla-get-Name doc)
+    fn
+  )
+)
+
+;; ============================================================
+;;  WDV 多目标选择弹窗：一个源文件对应多个仍在打开的目标文件时使用
+;;  candidates: ((dest-path . doc) ...)，已按"最近打开优先"排序
+;;  返回值：用户选中的索引（0基）；取消/关闭对话框返回 nil
+;; ============================================================
+
+(defun wdg-create-switch-select-dcl ( / tmp-path dcl-lines fh)
+  (setq tmp-path (strcat (getvar "TEMPPREFIX") "wdv_switch_select.dcl"))
+  (if (findfile tmp-path)
+    (vl-file-delete tmp-path)
+  )
+  (setq dcl-lines (list
+        "wdv_switch_select_dlg : dialog {"
+        "  label = \"WDV - 选择要切换的目标文件\";"
+        "  : text {"
+        "    label = \"当前源文件已打开多个目标文件，请选择要切换到的文件：\";"
+        "  }"
+        "  spacer;"
+        "  : list_box {"
+        "    key = \"switch_list\";"
+        "    width = 70;"
+        "    height = 14;"
+        "    fixed_width = true;"
+        "    fixed_height = true;"
+        "  }"
+        "  spacer;"
+        "  ok_cancel;"
+        "}"
+      ))
+  (setq fh (open tmp-path "w"))
+  (foreach line dcl-lines (write-line line fh))
+  (close fh)
+  tmp-path
+)
+
+(defun wdg-show-switch-select-dlg (candidates / dcl-path dcl-id pair result)
+  (setq wdv_sel_idx 0)      ;; 默认选中列表第一项（最近打开的目标文件）
+  (setq wdv_sel_ok nil)
+  (setq dcl-path (wdg-create-switch-select-dcl))
+  (setq dcl-id (load_dialog dcl-path))
+  (if (< dcl-id 0)
+    (princ "\n[WDV] 选择弹窗加载失败！")
+    (progn
+      (if (not (new_dialog "wdv_switch_select_dlg" dcl-id))
+        (princ "\n[WDV] 选择弹窗显示失败！")
+        (progn
+          (start_list "switch_list")
+          (foreach pair candidates
+            (add_list (wdv-doc-display-name (cdr pair)))
+          )
+          (end_list)
+          ;; 自动默认选中最近打开的文件（列表第一项）
+          (set_tile "switch_list" (itoa wdv_sel_idx))
+          ;; 单击列表项即立即切换并关闭弹窗（无需双击，也无需再点"确定"）
+          (action_tile "switch_list"
+            "(setq wdv_sel_idx (atoi $value))
+             (setq wdv_sel_ok T)
+             (done_dialog 1)"
+          )
+          (action_tile "accept"
+            "(setq wdv_sel_idx (atoi (get_tile \"switch_list\")))
+             (setq wdv_sel_ok T)
+             (done_dialog 1)"
+          )
+          (action_tile "cancel" "(done_dialog 0)")
+          (setq result (start_dialog))
+        )
+      )
+      (unload_dialog dcl-id)
+    )
+  )
+  (if wdv_sel_ok wdv_sel_idx nil)
+)
+
+(defun c:WDV ( / pair-path fh line lines cur-path sep-pos src-path dest-path
+                 src-candidates dest-src open-candidates target-doc
+                 sel-idx sel-pair)
   (setq pair-path (strcat (getvar "TEMPPREFIX") "wdg_switch_pair.txt"))
   (if (not (findfile pair-path))
     (princ "\n[WDV] 没有切换记录。请先通过WDG打开一个文件。")
     (progn
+      ;; 读取全部历史切换记录（每行一条 source|dest，文件内按写入先后顺序排列）
+      (setq lines nil)
       (setq fh (open pair-path "r"))
-      (setq line (read-line fh))
+      (while (setq line (read-line fh))
+        (setq lines (cons line lines))   ;; 反转累积，得到"最新在前"的顺序
+      )
       (close fh)
-      (if (not line)
+      (if (not lines)
         (princ "\n[WDV] 切换记录为空。")
         (progn
-          (setq sep-pos (vl-string-search "|" line))
-          (if (not sep-pos)
-            (princ "\n[WDV] 切换记录格式错误。")
-            (progn
-              (setq src-path (substr line 1 sep-pos))
-              (setq dest-path (substr line (+ sep-pos 2)))
-              (setq cur-path (wdg-current-dwg-path))
-              (setq target-doc nil)
-              (cond
-                ;; 当前是源 → 激活目标
-                ((and cur-path (= (strcase cur-path) (strcase src-path)))
-                 (setq target-doc (wdv-find-open-doc dest-path))
-                 (if target-doc
-                   (progn
-                     (princ (strcat "\n[WDV] 切换到目标: " (vla-get-Name target-doc)))
-                     (vla-put-ActiveDocument (vlax-get-acad-object) target-doc)
+          (setq cur-path (wdg-current-dwg-path))
+          (setq src-candidates nil)  ;; 当前文件作为源时，历史目标文件列表（去重，最新在前）
+          (setq dest-src nil)        ;; 当前文件作为目标时，对应源文件（取最近一次）
+          ;; lines 已是"最新记录在前"，按此顺序遍历即可得到正确的去重与优先级
+          (foreach ln lines
+            (setq sep-pos (vl-string-search "|" ln))
+            (if sep-pos
+              (progn
+                (setq src-path (substr ln 1 sep-pos))
+                (setq dest-path (substr ln (+ sep-pos 2)))
+                (cond
+                  ;; 当前文件曾作为源 → 记录目标（同一目标只保留最近一次，故需去重）
+                  ((and cur-path (= (strcase cur-path) (strcase src-path)))
+                   (if (not (member (strcase dest-path) (mapcar 'strcase src-candidates)))
+                     (setq src-candidates (append src-candidates (list dest-path)))
                    )
-                   (princ "\n[WDV] 目标文件未在CAD中打开。")
-                 )
-                )
-                ;; 当前是目标 → 激活源（支持未保存源）
-                ((and cur-path (= (strcase cur-path) (strcase dest-path)))
-                 (setq target-doc (wdv-find-open-doc src-path))
-                 (if target-doc
-                   (progn
-                     (princ (strcat "\n[WDV] 切回源文件: " (vla-get-Name target-doc)))
-                     (vla-put-ActiveDocument (vlax-get-acad-object) target-doc)
-                   )
-                   (princ "\n[WDV] 源文件未在CAD中打开。")
-                 )
-                )
-                ;; 当前不在切换对中
-                (T
-                 (princ "\n[WDV] 当前文件不在切换对中。")
-                 (princ (strcat "\n  源: " src-path))
-                 (princ (strcat "\n  目标: " dest-path))
+                  )
+                  ;; 当前文件曾作为目标 → 记录源（只取遍历到的第一条，即最近一次）
+                  ((and cur-path (= (strcase cur-path) (strcase dest-path)) (not dest-src))
+                   (setq dest-src src-path)
+                  )
                 )
               )
+            )
+          )
+          ;; 将历史目标列表过滤为"当前仍在CAD中打开"的文件，自动剔除已关闭的文件
+          (setq open-candidates nil)
+          (foreach dp src-candidates
+            (setq target-doc (wdv-find-open-doc dp))
+            (if target-doc
+              (setq open-candidates (append open-candidates (list (cons dp target-doc))))
+            )
+          )
+          (cond
+            ;; 当前是源，且仍打开的目标文件不止一个 → 弹窗选择，默认选中最近打开的一个
+            ((> (length open-candidates) 1)
+             (setq sel-idx (wdg-show-switch-select-dlg open-candidates))
+             (if sel-idx
+               (progn
+                 (setq sel-pair (nth sel-idx open-candidates))
+                 (princ (strcat "\n[WDV] 切换到目标: " (vla-get-Name (cdr sel-pair))))
+                 (vla-put-ActiveDocument (vlax-get-acad-object) (cdr sel-pair))
+               )
+               (princ "\n[WDV] 已取消切换。")
+             )
+            )
+            ;; 当前是源，且只有一个仍打开的目标文件 → 直接切换，无需弹窗
+            ((= (length open-candidates) 1)
+             (setq sel-pair (car open-candidates))
+             (princ (strcat "\n[WDV] 切换到目标: " (vla-get-Name (cdr sel-pair))))
+             (vla-put-ActiveDocument (vlax-get-acad-object) (cdr sel-pair))
+            )
+            ;; 当前是目标 → 切回源（支持未保存源）
+            (dest-src
+             (setq target-doc (wdv-find-open-doc dest-src))
+             (if target-doc
+               (progn
+                 (princ (strcat "\n[WDV] 切回源文件: " (vla-get-Name target-doc)))
+                 (vla-put-ActiveDocument (vlax-get-acad-object) target-doc)
+               )
+               (princ "\n[WDV] 源文件未在CAD中打开。")
+             )
+            )
+            ;; 有历史目标记录，但全部已关闭
+            (src-candidates
+             (princ "\n[WDV] 该源文件对应的目标文件均已关闭。")
+            )
+            ;; 当前不在任何切换记录中
+            (T
+             (princ "\n[WDV] 当前文件不在切换记录中。")
             )
           )
         )

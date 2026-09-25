@@ -1,43 +1,43 @@
-;@name ÎÄ×ÖÑùÊ½¼ì²é
-;@group ÎÄ×Ö¹¤¾ß
-;@desc É¨ÃèÍ¼Ö½ÖĞËùÓĞÎÄ×ÖÑùÊ½£¬¼ì²âÊ¹ÓÃ×´Ì¬ºÍ×ÖÌåÎÄ¼ş¿ÉÓÃĞÔ£¬Ö§³ÖÒ»¼üÌæ»»È±Ê§×ÖÌå
+;@name æ–‡å­—æ ·å¼æ£€æŸ¥
+;@group æ–‡å­—å·¥å…·
+;@desc æ‰«æå›¾çº¸ä¸­æ‰€æœ‰æ–‡å­—æ ·å¼ï¼Œæ£€æµ‹ä½¿ç”¨çŠ¶æ€å’Œå­—ä½“æ–‡ä»¶å¯ç”¨æ€§ï¼Œæ”¯æŒä¸€é”®æ›¿æ¢ç¼ºå¤±å­—ä½“
 ;@require ModelSpace
 ;@require TextStyle
 ;@require DimStyle
 
 (vl-load-com)
 
-;; ---------------- È«¾Ö³£Á¿ ----------------
+;; ---------------- å…¨å±€å¸¸é‡ ----------------
 (setq *wkk-dcl-file* (strcat (getenv "TEMP") "\\wkk_dialog.dcl"))
 
-;; ---------------- È«¾Ö±äÁ¿ ----------------
-;; ÑùÊ½Êı¾İÁĞ±í£¬Ã¿ÏîÎª: (NAME FONT BIGFONT TTF FONTPATH MISSING USEDBY TEXTCOUNT DIMSTYLES)
+;; ---------------- å…¨å±€å˜é‡ ----------------
+;; æ ·å¼æ•°æ®åˆ—è¡¨ï¼Œæ¯é¡¹ä¸º: (NAME FONT BIGFONT TTF FONTPATH MISSING USEDBY TEXTCOUNT DIMSTYLES)
 (setq *wkk-styles* nil)
-;; Ìæ»»Ä¿±ê×ÖÌåÃû£¨ÓÃÓÚÏÔÊ¾£©
+;; æ›¿æ¢ç›®æ ‡å­—ä½“åï¼ˆç”¨äºæ˜¾ç¤ºï¼‰
 (setq *wkk-target-font* "SimSun-ExtB")
-;; Ìæ»»Ä¿±êÑùÊ½Ãû£¨ÑùÕÅ´´½¨µÄÑùÊ½£¬Èç "WKK_BRLNSDB_SHX"£©
+;; æ›¿æ¢ç›®æ ‡æ ·å¼åï¼ˆæ ·å¼ åˆ›å»ºçš„æ ·å¼ï¼Œå¦‚ "WKK_BRLNSDB_SHX"ï¼‰
 (setq *wkk-target-style* nil)
 
 ;; ============================================================
-;;  µ÷ÊÔÖ§³Ö
+;;  è°ƒè¯•æ”¯æŒ
 ;; ============================================================
 
-;; µ÷ÊÔ¿ª¹Ø£ºT Êä³öÏêÏ¸Ìæ»»ÈÕÖ¾£¬nil ¾²Ä¬
+;; è°ƒè¯•å¼€å…³ï¼šT è¾“å‡ºè¯¦ç»†æ›¿æ¢æ—¥å¿—ï¼Œnil é™é»˜
 (setq *wkk-debug* T)
 
-;; µ÷ÊÔÊä³ö£¨ÊÜ *wkk-debug* ¿ØÖÆ£©
+;; è°ƒè¯•è¾“å‡ºï¼ˆå— *wkk-debug* æ§åˆ¶ï¼‰
 (defun wkk:dbg (msg)
   (if *wkk-debug*
     (progn (princ msg) (princ "\n"))
   )
 )
 
-;; Í¨¹ı Windows ×¢²á±í°Ñ TrueType ×ÖÌåÃû½âÎöÎªÊµ¼ÊÎÄ¼ş
-;; ×¢²á±í: HKLM/HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts
-;;   - ÏµÍ³×ÖÌåÖµÍ¨³£ÎªÎÄ¼şÃû(Èç "simsun.ttf")
-;;   - ÓÃ»§×ÖÌåÖµÍ¨³£ÎªÍêÕûÂ·¾¶(Èç "C:\Users\...\Fonts\xxx.ttf")
-;; font-name: ×ÖÌåÃûÈç "SimSun-ExtB"
-;; ·µ»Ø: ÎÄ¼şÃû»òÍêÕûÂ·¾¶×Ö·û´®£¬Î´ÕÒµ½·µ»Ø nil
+;; é€šè¿‡ Windows æ³¨å†Œè¡¨æŠŠ TrueType å­—ä½“åè§£æä¸ºå®é™…æ–‡ä»¶
+;; æ³¨å†Œè¡¨: HKLM/HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts
+;;   - ç³»ç»Ÿå­—ä½“å€¼é€šå¸¸ä¸ºæ–‡ä»¶å(å¦‚ "simsun.ttf")
+;;   - ç”¨æˆ·å­—ä½“å€¼é€šå¸¸ä¸ºå®Œæ•´è·¯å¾„(å¦‚ "C:\Users\...\Fonts\xxx.ttf")
+;; font-name: å­—ä½“åå¦‚ "SimSun-ExtB"
+;; è¿”å›: æ–‡ä»¶åæˆ–å®Œæ•´è·¯å¾„å­—ç¬¦ä¸²ï¼Œæœªæ‰¾åˆ°è¿”å› nil
 (defun wkk:resolve-ttf-file (font-name / vnames k v r result src)
   (setq vnames (list
     (strcat font-name " (TrueType)")
@@ -64,33 +64,33 @@
     )
   )
   (if result
-    (wkk:dbg (strcat "  ×¢²á±í½âÎö: " font-name " => " result "  [" src "]"))
-    (wkk:dbg (strcat "  ×¢²á±í½âÎö: " font-name " => Î´ÕÒµ½Ó³Éä"))
+    (wkk:dbg (strcat "  æ³¨å†Œè¡¨è§£æ: " font-name " => " result "  [" src "]"))
+    (wkk:dbg (strcat "  æ³¨å†Œè¡¨è§£æ: " font-name " => æœªæ‰¾åˆ°æ˜ å°„"))
   )
   result
 )
 
-;; Í¨¹ı entmod Ö±½ÓĞŞ¸Ä STYLE ·ûºÅ±í¼ÇÂ¼µÄ×ÖÌå
-;; ÈÆ¹ı ActiveX vla-put-FontFile µÄ"ÎÄ¼ş´¦ÀíÆ÷´íÎó"ÏŞÖÆ
-;; name: ÑùÊ½Ãû  font-file: ×ÖÌåÎÄ¼şÃû»òÍêÕûÂ·¾¶(Èç "simsun.ttf" »ò "C:\...\x.ttf")
-;; ×éÂë 3 = Ö÷×ÖÌåÎÄ¼ş, ×éÂë 4 = ´ó×ÖÌåÎÄ¼ş
-;; ·µ»Ø: T ³É¹¦ / nil Ê§°Ü
+;; é€šè¿‡ entmod ç›´æ¥ä¿®æ”¹ STYLE ç¬¦å·è¡¨è®°å½•çš„å­—ä½“
+;; ç»•è¿‡ ActiveX vla-put-FontFile çš„"æ–‡ä»¶å¤„ç†å™¨é”™è¯¯"é™åˆ¶
+;; name: æ ·å¼å  font-file: å­—ä½“æ–‡ä»¶åæˆ–å®Œæ•´è·¯å¾„(å¦‚ "simsun.ttf" æˆ– "C:\...\x.ttf")
+;; ç»„ç  3 = ä¸»å­—ä½“æ–‡ä»¶, ç»„ç  4 = å¤§å­—ä½“æ–‡ä»¶
+;; è¿”å›: T æˆåŠŸ / nil å¤±è´¥
 (defun wkk:set-style-font (name font-file / ename ed g3 g4 reread)
   (setq ename (tblobjname "STYLE" name))
   (if (null ename)
     (progn
-      (wkk:dbg (strcat "    [Ê§°Ü] Î´ÕÒµ½ STYLE ¼ÇÂ¼: " name))
+      (wkk:dbg (strcat "    [å¤±è´¥] æœªæ‰¾åˆ° STYLE è®°å½•: " name))
       nil
     )
     (progn
       (setq ed (entget ename))
-      ;; ×éÂë 3 = Ö÷×ÖÌåÎÄ¼ş
+      ;; ç»„ç  3 = ä¸»å­—ä½“æ–‡ä»¶
       (setq g3 (assoc 3 ed))
       (if g3
         (setq ed (subst (cons 3 font-file) g3 ed))
         (setq ed (append ed (list (cons 3 font-file))))
       )
-      ;; ×éÂë 4 = ´ó×ÖÌåÎÄ¼ş£¬Çå¿Õ
+      ;; ç»„ç  4 = å¤§å­—ä½“æ–‡ä»¶ï¼Œæ¸…ç©º
       (setq g4 (assoc 4 ed))
       (if g4
         (setq ed (subst (cons 4 "") g4 ed))
@@ -98,16 +98,16 @@
       (setq ed (entmod ed))
       (if (null ed)
         (progn
-          (wkk:dbg (strcat "    [Ê§°Ü] entmod ·µ»Ø nil: " name))
+          (wkk:dbg (strcat "    [å¤±è´¥] entmod è¿”å› nil: " name))
           nil
         )
         (progn
           (entupd ename)
           (setq reread (entget ename))
           (setq g4 (assoc 4 reread))
-          (wkk:dbg (strcat "    [³É¹¦] " name
-                           "  ×éÂë3=" (cdr (assoc 3 reread))
-                           "  ×éÂë4=" (if g4 (cdr g4) "(ÎŞ)")))
+          (wkk:dbg (strcat "    [æˆåŠŸ] " name
+                           "  ç»„ç 3=" (cdr (assoc 3 reread))
+                           "  ç»„ç 4=" (if g4 (cdr g4) "(æ— )")))
           T
         )
       )
@@ -116,10 +116,10 @@
 )
 
 ;; ============================================================
-;;  ¸¨Öúº¯Êı
+;;  è¾…åŠ©å‡½æ•°
 ;; ============================================================
 
-;; ¼ì²é×Ö·û´®½áÎ²
+;; æ£€æŸ¥å­—ç¬¦ä¸²ç»“å°¾
 (defun wkk:endswith-p (str suffix / slen)
   (setq slen (strlen suffix))
   (if (>= (strlen str) slen)
@@ -128,7 +128,7 @@
   )
 )
 
-;; ÓÒÌî³äµ½¹Ì¶¨¿í¶È£¨ÓÃÓÚÁĞ¶ÔÆë£©£¬·µ»Ø str + ¿Õ¸ñ²¹×ãÖÁ width
+;; å³å¡«å……åˆ°å›ºå®šå®½åº¦ï¼ˆç”¨äºåˆ—å¯¹é½ï¼‰ï¼Œè¿”å› str + ç©ºæ ¼è¡¥è¶³è‡³ width
 (defun wkk:pad-right (str width / pad-len result)
   (setq pad-len (- width (strlen str)))
   (setq result str)
@@ -140,7 +140,7 @@
   result
 )
 
-;; ·Ö¸îÂ·¾¶×Ö·û´®£¨; ·Ö¸ô£©
+;; åˆ†å‰²è·¯å¾„å­—ç¬¦ä¸²ï¼ˆ; åˆ†éš”ï¼‰
 (defun wkk:split-path (str / result pos ch part)
   (setq result '())
   (if (and str (/= str ""))
@@ -169,12 +169,12 @@
 )
 
 ;; ============================================================
-;;  ×ÖÌåÎÄ¼ş²éÕÒ
+;;  å­—ä½“æ–‡ä»¶æŸ¥æ‰¾
 ;; ============================================================
 
-;; ÔÚ AutoCAD Ö§³ÖÂ·¾¶ + Windows Fonts + DWG Ä¿Â¼ÖĞ²éÕÒ×ÖÌåÎÄ¼ş
-;; fontname: ÎÄ¼şÃû£¨Èç "hztxt.shx" »ò "SimSun"£©
-;; ·µ»Ø: ÍêÕûÂ·¾¶×Ö·û´®£¬Î´ÕÒµ½·µ»Ø nil
+;; åœ¨ AutoCAD æ”¯æŒè·¯å¾„ + Windows Fonts + DWG ç›®å½•ä¸­æŸ¥æ‰¾å­—ä½“æ–‡ä»¶
+;; fontname: æ–‡ä»¶åï¼ˆå¦‚ "hztxt.shx" æˆ– "SimSun"ï¼‰
+;; è¿”å›: å®Œæ•´è·¯å¾„å­—ç¬¦ä¸²ï¼Œæœªæ‰¾åˆ°è¿”å› nil
 (defun wkk:find-font-file (fontname / acad-paths win-fonts dwg-dir paths result)
   (if (or (null fontname) (= fontname ""))
     (setq result nil)
@@ -216,11 +216,11 @@
 )
 
 ;; ============================================================
-;;  Êı¾İ²É¼¯
+;;  æ•°æ®é‡‡é›†
 ;; ============================================================
 
-;; ±éÀú TextStyleTable + ËùÓĞÎÄ×ÖÊµÌå + ËùÓĞ DimStyle
-;; ·µ»Ø *wkk-styles* ²¢Ë¢ĞÂÈ«¾Ö±äÁ¿
+;; éå† TextStyleTable + æ‰€æœ‰æ–‡å­—å®ä½“ + æ‰€æœ‰ DimStyle
+;; è¿”å› *wkk-styles* å¹¶åˆ·æ–°å…¨å±€å˜é‡
 (defun wkk:collect-data ( / doc textstyles i style name font bigfont ttf
                           textcount-map dimref-map all-names ss
                           n ent obj etype style-used dimstyles-list
@@ -234,7 +234,7 @@
   (setq dimref-map '())
   (setq all-names '())
 
-  ;; ---- Pass 1: ±éÀúËùÓĞ TextStyle ----
+  ;; ---- Pass 1: éå†æ‰€æœ‰ TextStyle ----
   (vlax-for style textstyles
     (setq name (vlax-get-property style 'Name))
     (setq all-names (append all-names (list name)))
@@ -252,22 +252,22 @@
     (if (null ttf) (setq ttf ""))
 
     (setq fontpath nil)
-    (setq missing "Õı³£")
+    (setq missing "æ­£å¸¸")
     (cond
       ((and (/= (if (vl-catch-all-error-p font) "" font) "")
             (not (vl-catch-all-error-p font)))
         (setq fontpath (wkk:find-font-file font))
-        (if (null fontpath) (setq missing "È±Ê§!"))
+        (if (null fontpath) (setq missing "ç¼ºå¤±!"))
       )
       ((and (/= ttf "") (null fontpath))
         (setq fontpath (wkk:find-font-file ttf))
-        (if (null fontpath) (setq missing "È±Ê§!"))
+        (if (null fontpath) (setq missing "ç¼ºå¤±!"))
       )
     )
 
     (setq *wkk-styles*
       (append *wkk-styles*
-        (list (list name font bigfont ttf fontpath missing "Î´Ê¹ÓÃ" 0 ""))
+        (list (list name font bigfont ttf fontpath missing "æœªä½¿ç”¨" 0 ""))
       )
     )
 
@@ -275,7 +275,7 @@
     (setq dimref-map (append dimref-map (list (cons name ""))))
   )
 
-  ;; ---- Pass 2: ±éÀúÎÄ×ÖÊµÌå (ModelSpace) ----
+  ;; ---- Pass 2: éå†æ–‡å­—å®ä½“ (ModelSpace) ----
   (setq ss (vl-catch-all-apply 'vla-get-ModelSpace (list doc)))
   (if (not (vl-catch-all-error-p ss))
     (vlax-for obj ss
@@ -303,7 +303,7 @@
     )
   )
 
-  ;; ---- Pass 2: ±éÀúÎÄ×ÖÊµÌå (PaperSpace) ----
+  ;; ---- Pass 2: éå†æ–‡å­—å®ä½“ (PaperSpace) ----
   (setq ss (vl-catch-all-apply 'vla-get-PaperSpace (list doc)))
   (if (not (vl-catch-all-error-p ss))
     (vlax-for obj ss
@@ -331,7 +331,7 @@
     )
   )
 
-  ;; ---- Pass 3: ±éÀú DimStyle ----
+  ;; ---- Pass 3: éå† DimStyle ----
   (setq dimstyles-list (vlax-get-property doc 'DimStyles))
   (vlax-for dimstyle dimstyles-list
     (setq style-used
@@ -362,7 +362,7 @@
     )
   )
 
-  ;; ---- ºÏ²¢×´Ì¬ ----
+  ;; ---- åˆå¹¶çŠ¶æ€ ----
   (setq i 0)
   (while (< i (length *wkk-styles*))
     (setq item (nth i *wkk-styles*))
@@ -372,13 +372,13 @@
 
     (cond
       ((> tc 0)
-        (setq usedby "ÒÑÊ¹ÓÃ")
+        (setq usedby "å·²ä½¿ç”¨")
       )
       ((and (= tc 0) (/= dr ""))
-        (setq usedby "½ö±ê×¢ÒıÓÃ")
+        (setq usedby "ä»…æ ‡æ³¨å¼•ç”¨")
       )
       (t
-        (setq usedby "Î´Ê¹ÓÃ")
+        (setq usedby "æœªä½¿ç”¨")
       )
     )
 
@@ -397,11 +397,11 @@
 )
 
 ;; ============================================================
-;;  ÁĞ±íÏÔÊ¾ÓëÏêÇé¸üĞÂ
+;;  åˆ—è¡¨æ˜¾ç¤ºä¸è¯¦æƒ…æ›´æ–°
 ;; ============================================================
 
-;; Éú³ÉÁĞ±íÏÔÊ¾ĞĞ
-;; È±Ê§×ÖÌåµÄĞĞ¼ÓºìÉ«±ê¼Ç
+;; ç”Ÿæˆåˆ—è¡¨æ˜¾ç¤ºè¡Œ
+;; ç¼ºå¤±å­—ä½“çš„è¡ŒåŠ çº¢è‰²æ ‡è®°
 (defun wkk:make-display-line (item / name font missing usedby ttf-name
                                status-prefix textcount count-str prefix)
   (setq name (nth 0 item))
@@ -415,26 +415,26 @@
     (setq font ttf-name)
   )
   (if (or (null font) (= font ""))
-    (setq font "(ÎŞ)")
+    (setq font "(æ— )")
   )
 
   (setq status-prefix
     (cond
-      ((= usedby "ÒÑÊ¹ÓÃ") "O")
-      ((= usedby "½ö±ê×¢ÒıÓÃ") "~")
+      ((= usedby "å·²ä½¿ç”¨") "O")
+      ((= usedby "ä»…æ ‡æ³¨å¼•ç”¨") "~")
       (t ".")
     )
   )
 
   (setq count-str
     (if (> textcount 0)
-      (strcat " (" (itoa textcount) "´¦)")
+      (strcat " (" (itoa textcount) "å¤„)")
       ""
     )
   )
 
   (setq prefix
-    (if (= missing "È±Ê§!")
+    (if (= missing "ç¼ºå¤±!")
       "[!] "
       "    "
     )
@@ -450,11 +450,11 @@
   )
 )
 
-;; ¸üĞÂÏêÇéÎÄ±¾
+;; æ›´æ–°è¯¦æƒ…æ–‡æœ¬
 (defun wkk:update-detail (index / item name font bigfont ttf fontpath missing
                            usedby textcount dimstyles msg)
   (if (null index)
-    (set_tile "detail" "Çë´ÓÉÏ·½ÁĞ±íÑ¡ÔñÒ»¸öÎÄ×ÖÑùÊ½")
+    (set_tile "detail" "è¯·ä»ä¸Šæ–¹åˆ—è¡¨é€‰æ‹©ä¸€ä¸ªæ–‡å­—æ ·å¼")
     (progn
       (setq item (nth index *wkk-styles*))
       (setq name (nth 0 item))
@@ -471,18 +471,18 @@
         (setq font (strcat ttf " (TrueType)"))
       )
       (if (or (null font) (= font ""))
-        (setq font "(ÎŞ)")
+        (setq font "(æ— )")
       )
 
       (setq msg (strcat
-        "ÑùÊ½: " name "\n"
-        "×´Ì¬: " usedby
-        (if (> textcount 0) (strcat " (" (itoa textcount) "´¦ÎÄ×Ö)") "")
+        "æ ·å¼: " name "\n"
+        "çŠ¶æ€: " usedby
+        (if (> textcount 0) (strcat " (" (itoa textcount) "å¤„æ–‡å­—)") "")
         "\n"
-        "¹ØÁª±ê×¢: " (if (/= dimstyles "") dimstyles "(ÎŞ)") "\n"
-        "×ÖÌå: " font " " missing "\n"
-        (if (/= bigfont "") (strcat "´ó×ÖÌå: " bigfont "\n") "")
-        "Â·¾¶: " (if fontpath fontpath "(Î´ÕÒµ½)")
+        "å…³è”æ ‡æ³¨: " (if (/= dimstyles "") dimstyles "(æ— )") "\n"
+        "å­—ä½“: " font " " missing "\n"
+        (if (/= bigfont "") (strcat "å¤§å­—ä½“: " bigfont "\n") "")
+        "è·¯å¾„: " (if fontpath fontpath "(æœªæ‰¾åˆ°)")
       ))
       (set_tile "detail" msg)
     )
@@ -490,7 +490,7 @@
 )
 
 ;; ============================================================
-;;  ¶¯Ì¬Éú³É DCL
+;;  åŠ¨æ€ç”Ÿæˆ DCL
 ;; ============================================================
 
 (defun wkk:write-dcl ( / f)
@@ -500,7 +500,7 @@
   (setq f (open *wkk-dcl-file* "w"))
 
   (write-line "wkk_dialog : dialog {" f)
-  (write-line "  label = \"ÎÄ×ÖÑùÊ½¼ì²é v1.0\";" f)
+  (write-line "  label = \"æ–‡å­—æ ·å¼æ£€æŸ¥ v1.0\";" f)
   (write-line "  : column {" f)
   (write-line "    : list_box {" f)
   (write-line "      key = \"style_list\";" f)
@@ -523,17 +523,17 @@
   (write-line "    }" f)
     (write-line "    : text {" f)
   (write-line "      key = \"font_info\";" f)
-  (write-line "      label = \"µ±Ç°Ìæ»»×ÖÌå: SimSun-ExtB\";" f)
+  (write-line "      label = \"å½“å‰æ›¿æ¢å­—ä½“: SimSun-ExtB\";" f)
   (write-line "      alignment = centered;" f)
   (write-line "    }" f)
   (write-line "    : row {" f)
-  (write-line "      : button { key = \"replace\"; label = \"Ìæ»»×ÖÌå\"; width = 10; }" f)
-  (write-line "      : button { key = \"replaceall\"; label = \"Ò»¼üÌæ»»\"; width = 10; }" f)
-      (write-line "      : button { key = \"selall\"; label = \"Ò»¼üÑ¡ÖĞ\"; width = 10; }" f)
-      (write-line "      : button { key = \"samples\"; label = \"ÑùÕÅ\"; width = 8; }" f)
-      (write-line "      : button { key = \"resetfont\"; label = \"»Ö¸´Ä¬ÈÏ\"; width = 8; }" f)
-      (write-line "      : button { key = \"refresh\"; label = \"Ë¢ĞÂ\"; width = 8; }" f)
-  (write-line "      : button { key = \"exit\"; label = \"ÍË³ö\"; is_cancel = true; width = 8; }" f)
+  (write-line "      : button { key = \"replace\"; label = \"æ›¿æ¢å­—ä½“\"; width = 10; }" f)
+  (write-line "      : button { key = \"replaceall\"; label = \"ä¸€é”®æ›¿æ¢\"; width = 10; }" f)
+      (write-line "      : button { key = \"selall\"; label = \"ä¸€é”®é€‰ä¸­\"; width = 10; }" f)
+      (write-line "      : button { key = \"samples\"; label = \"æ ·å¼ \"; width = 8; }" f)
+      (write-line "      : button { key = \"resetfont\"; label = \"æ¢å¤é»˜è®¤\"; width = 8; }" f)
+      (write-line "      : button { key = \"refresh\"; label = \"åˆ·æ–°\"; width = 8; }" f)
+  (write-line "      : button { key = \"exit\"; label = \"é€€å‡º\"; is_cancel = true; width = 8; }" f)
   (write-line "    }" f)
   (write-line "  }" f)
   (write-line "}" f)
@@ -543,7 +543,7 @@
 )
 
 ;; ============================================================
-;;  Ò»¼üÑ¡ÖĞÖ¸¶¨ÑùÊ½µÄËùÓĞÎÄ×Ö¶ÔÏó
+;;  ä¸€é”®é€‰ä¸­æŒ‡å®šæ ·å¼çš„æ‰€æœ‰æ–‡å­—å¯¹è±¡
 ;; ============================================================
 
 (defun wkk:select-all-by-style (style / ss)
@@ -553,32 +553,32 @@
   (if ss
     (progn
       (sssetfirst nil ss)
-      (princ (strcat "\n[WKK] ÒÑÑ¡ÖĞÑùÊ½ \"" style "\" µÄÎÄ×Ö£¬¹² "
-                     (itoa (sslength ss)) " ¸ö"))
+      (princ (strcat "\n[WKK] å·²é€‰ä¸­æ ·å¼ \"" style "\" çš„æ–‡å­—ï¼Œå…± "
+                     (itoa (sslength ss)) " ä¸ª"))
       T
     )
     (progn
-      (princ (strcat "\n[WKK] ÑùÊ½ \"" style "\" Î´ÕÒµ½ÈÎºÎÎÄ×Ö¶ÔÏó"))
+      (princ (strcat "\n[WKK] æ ·å¼ \"" style "\" æœªæ‰¾åˆ°ä»»ä½•æ–‡å­—å¯¹è±¡"))
       nil
     )
   )
 )
 
 ;; ============================================================
-;;  Ìæ»»×ÖÌå
+;;  æ›¿æ¢å­—ä½“
 ;; ============================================================
 
-;; index: ÔÚ *wkk-styles* ÖĞµÄË÷Òı
-;; ·µ»Ø T ±íÊ¾Ìæ»»³É¹¦£¬nil ±íÊ¾È¡Ïû»òÊ§°Ü
-;; ¹Ì¶¨Ìæ»»Îª *wkk-target-font*£¨Èç SimSun-ExtB£©£¬Í¨¹ı×¢²á±í½âÎöÕæÊµÎÄ¼ş
-;; Í¨¹ı entmod Ğ´Èë STYLE ¼ÇÂ¼×éÂë 3£¬ÈÆ¹ı COM ×ÖÌå´¦ÀíÆ÷´íÎó
+;; index: åœ¨ *wkk-styles* ä¸­çš„ç´¢å¼•
+;; è¿”å› T è¡¨ç¤ºæ›¿æ¢æˆåŠŸï¼Œnil è¡¨ç¤ºå–æ¶ˆæˆ–å¤±è´¥
+;; å›ºå®šæ›¿æ¢ä¸º *wkk-target-font*ï¼ˆå¦‚ SimSun-ExtBï¼‰ï¼Œé€šè¿‡æ³¨å†Œè¡¨è§£æçœŸå®æ–‡ä»¶
+;; é€šè¿‡ entmod å†™å…¥ STYLE è®°å½•ç»„ç  3ï¼Œç»•è¿‡ COM å­—ä½“å¤„ç†å™¨é”™è¯¯
 
 ;; ============================================================
-;; °²È«Ìæ»»ÎÄ×ÖÑùÊ½£º
-;; 1. ²éÕÒÊ¹ÓÃ¾ÉÑùÊ½µÄÎÄ×Ö
-;; 2. ĞÂ½¨WKK_Ç°×ºÑùÊ½
-;; 3. ½«ÎÄ×Ö¶ÔÏóÇ¨ÒÆµ½ĞÂÑùÊ½
-;; ²»Ö±½ÓÆÆ»µÔ­STYLE
+;; å®‰å…¨æ›¿æ¢æ–‡å­—æ ·å¼ï¼š
+;; 1. æŸ¥æ‰¾ä½¿ç”¨æ—§æ ·å¼çš„æ–‡å­—
+;; 2. æ–°å»ºWKK_å‰ç¼€æ ·å¼
+;; 3. å°†æ–‡å­—å¯¹è±¡è¿ç§»åˆ°æ–°æ ·å¼
+;; ä¸ç›´æ¥ç ´ååŸSTYLE
 ;; ============================================================
 
 (defun wkk:get-style-objects (style / ss result i e)
@@ -636,34 +636,34 @@
 (defun wkk:replace-style-safe (oldstyle / target font-file objs newstyle count)
   (setq target *wkk-target-style*)
 
-  ;; ĞÂ·½°¸£ºÊ¹ÓÃÑùÕÅÑùÊ½Ö±½ÓÌæ»»
+  ;; æ–°æ–¹æ¡ˆï¼šä½¿ç”¨æ ·å¼ æ ·å¼ç›´æ¥æ›¿æ¢
   (if (and target (/= target ""))
     (if (null (tblobjname "STYLE" target))
       (progn
-        (wkk:dbg (strcat "[WKK] Ä¿±êÑùÊ½²»´æÔÚ: " target))
+        (wkk:dbg (strcat "[WKK] ç›®æ ‡æ ·å¼ä¸å­˜åœ¨: " target))
         nil
       )
       (progn
         (setq objs (wkk:get-style-objects oldstyle))
-        (wkk:dbg (strcat "[WKK] Ô­ÑùÊ½: " oldstyle))
-        (wkk:dbg (strcat "[WKK] Ä¿±êÑùÊ½: " target))
-        (wkk:dbg (strcat "[WKK] Ê¹ÓÃÊıÁ¿: " (itoa (length objs))))
+        (wkk:dbg (strcat "[WKK] åŸæ ·å¼: " oldstyle))
+        (wkk:dbg (strcat "[WKK] ç›®æ ‡æ ·å¼: " target))
+        (wkk:dbg (strcat "[WKK] ä½¿ç”¨æ•°é‡: " (itoa (length objs))))
         (setq count 0)
         (foreach e objs
           (wkk:change-object-style e target)
           (setq count (1+ count))
         )
-        (wkk:dbg (strcat "[WKK] Ç¨ÒÆÍê³É: " (itoa count)))
+        (wkk:dbg (strcat "[WKK] è¿ç§»å®Œæˆ: " (itoa count)))
         T
       )
     )
-    ;; ÀÏ·½°¸£ºÊ¹ÓÃÄ¬ÈÏ×ÖÌå£¬Í¨¹ı×¢²á±í½âÎö
+    ;; è€æ–¹æ¡ˆï¼šä½¿ç”¨é»˜è®¤å­—ä½“ï¼Œé€šè¿‡æ³¨å†Œè¡¨è§£æ
     (progn
       (setq target *wkk-target-font*)
       (setq font-file (wkk:resolve-ttf-file target))
       (if (null font-file)
         (progn
-          (wkk:dbg (strcat "[WKK] ÎŞ·¨½âÎö×ÖÌå: " target))
+          (wkk:dbg (strcat "[WKK] æ— æ³•è§£æå­—ä½“: " target))
           nil
         )
         (progn
@@ -672,8 +672,8 @@
           (if (> (strlen newstyle) 255)
             (setq newstyle (substr newstyle 1 255))
           )
-          (wkk:dbg (strcat "[WKK] Ô­ÑùÊ½: " oldstyle))
-          (wkk:dbg (strcat "[WKK] Ê¹ÓÃÊıÁ¿: " (itoa (length objs))))
+          (wkk:dbg (strcat "[WKK] åŸæ ·å¼: " oldstyle))
+          (wkk:dbg (strcat "[WKK] ä½¿ç”¨æ•°é‡: " (itoa (length objs))))
           (if (wkk:create-new-style newstyle font-file)
             (progn
               (setq count 0)
@@ -681,8 +681,8 @@
                 (wkk:change-object-style e newstyle)
                 (setq count (1+ count))
               )
-              (wkk:dbg (strcat "[WKK] ĞÂÑùÊ½´´½¨: " newstyle))
-              (wkk:dbg (strcat "[WKK] Ç¨ÒÆÍê³É: " (itoa count)))
+              (wkk:dbg (strcat "[WKK] æ–°æ ·å¼åˆ›å»º: " newstyle))
+              (wkk:dbg (strcat "[WKK] è¿ç§»å®Œæˆ: " (itoa count)))
               T
             )
             nil
@@ -697,22 +697,22 @@
   (setq item (nth index *wkk-styles*))
   (setq name (nth 0 item))
 
-  (wkk:dbg (strcat "[WKK] ---- °²È«Ìæ»»¿ªÊ¼: " name " ----"))
+  (wkk:dbg (strcat "[WKK] ---- å®‰å…¨æ›¿æ¢å¼€å§‹: " name " ----"))
 
   (setq result (wkk:replace-style-safe name))
   (if result
-    (wkk:dbg "[WKK] ---- °²È«Ìæ»»³É¹¦ ----")
-    (wkk:dbg "[WKK] ---- °²È«Ìæ»»Ê§°Ü ----")
+    (wkk:dbg "[WKK] ---- å®‰å…¨æ›¿æ¢æˆåŠŸ ----")
+    (wkk:dbg "[WKK] ---- å®‰å…¨æ›¿æ¢å¤±è´¥ ----")
   )
   result
 )
 
 ;; ============================================================
-;;  É¨Ãè¿ÉÓÃ×ÖÌåÁĞ±í
+;;  æ‰«æå¯ç”¨å­—ä½“åˆ—è¡¨
 ;; ============================================================
 
-;; ·µ»ØÁĞ±í£¬Ã¿Ïî: (ÏÔÊ¾Ãû . ÍêÕûÂ·¾¶)
-;; SHX ´Ó ACAD Ö§³ÖÂ·¾¶²éÕÒ£¬TTF ´Ó Windows ×ÖÌåÄ¿Â¼²éÕÒ
+;; è¿”å›åˆ—è¡¨ï¼Œæ¯é¡¹: (æ˜¾ç¤ºå . å®Œæ•´è·¯å¾„)
+;; SHX ä» ACAD æ”¯æŒè·¯å¾„æŸ¥æ‰¾ï¼ŒTTF ä» Windows å­—ä½“ç›®å½•æŸ¥æ‰¾
 (defun wkk:get-available-fonts ( / acad-paths win-fonts paths fonts i files
                                 fname fullpath)
   (setq acad-paths (getenv "ACAD"))
@@ -728,7 +728,7 @@
 
   (setq fonts '())
 
-  ;; É¨ÃèÃ¿¸öÂ·¾¶ÏÂµÄ .shx ºÍ .ttf
+  ;; æ‰«ææ¯ä¸ªè·¯å¾„ä¸‹çš„ .shx å’Œ .ttf
   (foreach p paths
     (if (vl-file-directory-p p)
       (progn
@@ -750,14 +750,14 @@
     )
   )
 
-  ;; °´ÏÔÊ¾ÃûÅÅĞò
+  ;; æŒ‰æ˜¾ç¤ºåæ’åº
   (vl-sort fonts
     (function (lambda (a b) (< (strcase (car a)) (strcase (car b)))))
   )
 )
 
 ;; ============================================================
-;;  ×ÖÌåÑ¡Ôñ¶Ô»°¿ò DCL
+;;  å­—ä½“é€‰æ‹©å¯¹è¯æ¡† DCL
 ;; ============================================================
 
 (defun wkk:write-font-dcl ( / f)
@@ -767,7 +767,7 @@
   (setq f (open *wkk-dcl-file* "w"))
 
   (write-line "wkk_font : dialog {" f)
-  (write-line "  label = \"Ñ¡ÔñÌæ»»×ÖÌå\";" f)
+  (write-line "  label = \"é€‰æ‹©æ›¿æ¢å­—ä½“\";" f)
   (write-line "  : column {" f)
   (write-line "    : list_box {" f)
   (write-line "      key = \"font_list\";" f)
@@ -777,8 +777,8 @@
   (write-line "    }" f)
   (write-line "    spacer_1;" f)
   (write-line "    : row {" f)
-  (write-line "      : button { key = \"ok\"; label = \"È·¶¨\"; is_default = true; width = 12; }" f)
-  (write-line "      : button { key = \"cancel\"; label = \"È¡Ïû\"; is_cancel = true; width = 12; }" f)
+  (write-line "      : button { key = \"ok\"; label = \"ç¡®å®š\"; is_default = true; width = 12; }" f)
+  (write-line "      : button { key = \"cancel\"; label = \"å–æ¶ˆ\"; is_cancel = true; width = 12; }" f)
   (write-line "    }" f)
   (write-line "  }" f)
   (write-line "}" f)
@@ -788,15 +788,15 @@
 )
 
 ;; ============================================================
-;;  ×ÖÌåÎÄ¼ş·ÖÀà£¨Ó¢ÎÄ×ÖÌå / ÖĞÎÄ×ÖÌå / ÏµÍ³×ÖÌå£©
-;;  ÓÃÓÚÑùÕÅ¶Ô»°¿òµÄ×ÖÌåÁĞ±íÉ¸Ñ¡
-;;  ·ÖÀàÒÀ¾İ£¨ÈıÎ¬¶È×ÛºÏÅĞ¶Ï£©:
-;;   1. ÎÄ¼şºó×º: .shx = Ê¸Á¿×ÖÌå, .ttf = ÏµÍ³×ÖÌå
-;;   2. ÃüÃûÏ°¹ß: ´ó×ÖÌåÎÄ¼şÃûÍ¨³£º¬ hz/gb/china/big/cjk µÈ
-;;   3. ¼¼ÊõÔ­Àí: SHX ´ó×ÖÌåÖ§³ÖË«×Ö½Ú×Ö·û¼¯£¨ÖĞÎÄ/ÈÕÎÄ/º«ÎÄ£©
+;;  å­—ä½“æ–‡ä»¶åˆ†ç±»ï¼ˆè‹±æ–‡å­—ä½“ / ä¸­æ–‡å­—ä½“ / ç³»ç»Ÿå­—ä½“ï¼‰
+;;  ç”¨äºæ ·å¼ å¯¹è¯æ¡†çš„å­—ä½“åˆ—è¡¨ç­›é€‰
+;;  åˆ†ç±»ä¾æ®ï¼ˆä¸‰ç»´åº¦ç»¼åˆåˆ¤æ–­ï¼‰:
+;;   1. æ–‡ä»¶åç¼€: .shx = çŸ¢é‡å­—ä½“, .ttf = ç³»ç»Ÿå­—ä½“
+;;   2. å‘½åä¹ æƒ¯: å¤§å­—ä½“æ–‡ä»¶åé€šå¸¸å« hz/gb/china/big/cjk ç­‰
+;;   3. æŠ€æœ¯åŸç†: SHX å¤§å­—ä½“æ”¯æŒåŒå­—èŠ‚å­—ç¬¦é›†ï¼ˆä¸­æ–‡/æ—¥æ–‡/éŸ©æ–‡ï¼‰
 ;; ============================================================
 
-;; ÅĞ¶Ï SHX ÎÄ¼şÊÇ·ñÎª´ó×ÖÌå£¨ÖĞÎÄ×ÖÌå£©
+;; åˆ¤æ–­ SHX æ–‡ä»¶æ˜¯å¦ä¸ºå¤§å­—ä½“ï¼ˆä¸­æ–‡å­—ä½“ï¼‰
 ;; font-entry: (fontname . filepath)
 (defun wkk:fontfile-is-bigfont-p (font-entry / fname upper)
   (setq fname (car font-entry))
@@ -812,7 +812,7 @@
       (vl-string-search "CJKTXT" upper))
 )
 
-;; ÅĞ¶ÏÊÇ·ñÎªÓ¢ÎÄ×ÖÌå£¨SHX ·Ç´ó×ÖÌå£©
+;; åˆ¤æ–­æ˜¯å¦ä¸ºè‹±æ–‡å­—ä½“ï¼ˆSHX éå¤§å­—ä½“ï¼‰
 (defun wkk:fontfile-is-english (font-entry / fname upper)
   (setq fname (car font-entry))
   (setq upper (strcase fname))
@@ -820,7 +820,7 @@
        (not (wkk:fontfile-is-bigfont-p font-entry)))
 )
 
-;; ÅĞ¶ÏÊÇ·ñÎªÖĞÎÄ×ÖÌå£¨SHX ´ó×ÖÌå£©
+;; åˆ¤æ–­æ˜¯å¦ä¸ºä¸­æ–‡å­—ä½“ï¼ˆSHX å¤§å­—ä½“ï¼‰
 (defun wkk:fontfile-is-chinese (font-entry / fname upper)
   (setq fname (car font-entry))
   (setq upper (strcase fname))
@@ -828,7 +828,7 @@
        (wkk:fontfile-is-bigfont-p font-entry))
 )
 
-;; ÅĞ¶ÏÊÇ·ñÎªÏµÍ³×ÖÌå£¨TrueType / OpenType£©
+;; åˆ¤æ–­æ˜¯å¦ä¸ºç³»ç»Ÿå­—ä½“ï¼ˆTrueType / OpenTypeï¼‰
 (defun wkk:fontfile-is-system (font-entry / fname upper)
   (setq fname (car font-entry))
   (setq upper (strcase fname))
@@ -837,7 +837,7 @@
 
 
 ;; ============================================================
-;;  ÑùÕÅÑ¡Ôñ¶Ô»°¿ò DCL
+;;  æ ·å¼ é€‰æ‹©å¯¹è¯æ¡† DCL
 ;; ============================================================
 
 (defun wkk:write-samples-dcl ( / f)
@@ -855,9 +855,9 @@
   (write-line "      edit_limit = 100;" f)
   (write-line "    }" f)
   (write-line "    : row {" f)
-  (write-line "      : toggle { key = \"filter_en\"; label = \"Ó¢ÎÄ×ÖÌå\"; }" f)
-  (write-line "      : toggle { key = \"filter_cn\"; label = \"ÖĞÎÄ×ÖÌå\"; }" f)
-  (write-line "      : toggle { key = \"filter_sys\"; label = \"ÏµÍ³×ÖÌå\"; }" f)
+  (write-line "      : toggle { key = \"filter_en\"; label = \"è‹±æ–‡å­—ä½“\"; }" f)
+  (write-line "      : toggle { key = \"filter_cn\"; label = \"ä¸­æ–‡å­—ä½“\"; }" f)
+  (write-line "      : toggle { key = \"filter_sys\"; label = \"ç³»ç»Ÿå­—ä½“\"; }" f)
   (write-line "    }" f)
   (write-line "    : list_box {" f)
   (write-line "      key = \"font_list\";" f)
@@ -874,7 +874,7 @@
   (write-line "    spacer_1;" f)
   (write-line "    : row {" f)
   (write-line "      : button { key = \"filter\"; label = \"Filter\"; width = 10; }" f)
-  (write-line "      : button { key = \"setreplace\"; label = \"ÉèÎªÌæ»»\"; width = 10; is_enabled = false; }" f)
+  (write-line "      : button { key = \"setreplace\"; label = \"è®¾ä¸ºæ›¿æ¢\"; width = 10; is_enabled = false; }" f)
   (write-line "      : button { key = \"ok\"; label = \"OK\"; is_default = true; width = 10; }" f)
   (write-line "      : button { key = \"cancel\"; label = \"Cancel\"; is_cancel = true; width = 10; }" f)
   (write-line "    }" f)
@@ -884,7 +884,7 @@
   (princ)
 )
 
-;; ¸üĞÂ"ÉèÎªÌæ»»"°´Å¥×´Ì¬£ºÑ¡ÖĞÇ¡ºÃ1¸ö×ÖÌåÊ±ÆôÓÃ£¨²»ÒªÇóÑùÊ½ÒÑ´æÔÚ£©
+;; æ›´æ–°"è®¾ä¸ºæ›¿æ¢"æŒ‰é’®çŠ¶æ€ï¼šé€‰ä¸­æ°å¥½1ä¸ªå­—ä½“æ—¶å¯ç”¨ï¼ˆä¸è¦æ±‚æ ·å¼å·²å­˜åœ¨ï¼‰
 (defun wkk:update-setreplace-btn ( / sel-str sel-list)
   (setq sel-str (get_tile "font_list"))
   (if (or (null sel-str) (= sel-str ""))
@@ -899,8 +899,8 @@
   )
 )
 
-;; ¸ù¾İ¸´Ñ¡¿òºÍËÑË÷ÎÄ±¾Ë¢ĞÂÑùÕÅ×ÖÌåÁĞ±í£¨¶Ô»°¿òÄÚ¾ÍµØË¢ĞÂ£©
-;; ÒÀÀµ¶¯Ì¬±äÁ¿: font-list-full, font-list-filtered (wkk:create-font-samples ¾Ö²¿±äÁ¿)
+;; æ ¹æ®å¤é€‰æ¡†å’Œæœç´¢æ–‡æœ¬åˆ·æ–°æ ·å¼ å­—ä½“åˆ—è¡¨ï¼ˆå¯¹è¯æ¡†å†…å°±åœ°åˆ·æ–°ï¼‰
+;; ä¾èµ–åŠ¨æ€å˜é‡: font-list-full, font-list-filtered (wkk:create-font-samples å±€éƒ¨å˜é‡)
 (defun wkk:refresh-samples-list ( / show-en show-cn show-sys search-text filtered)
   (setq show-en (= (get_tile "filter_en") "1"))
   (setq show-cn (= (get_tile "filter_cn") "1"))
@@ -930,12 +930,12 @@
   )
   (end_list)
 
-  ;; ÖØÖÃ"ÉèÎªÌæ»»"°´Å¥×´Ì¬
+  ;; é‡ç½®"è®¾ä¸ºæ›¿æ¢"æŒ‰é’®çŠ¶æ€
   (mode_tile "setreplace" 1)
 )
 
 ;; ============================================================
-;;  ´´½¨×ÖÌåÑùÕÅ
+;;  åˆ›å»ºå­—ä½“æ ·å¼ 
 ;; ============================================================
 
 (defun wkk:create-font-samples ( / font-list-full font-list-filtered
@@ -950,7 +950,7 @@
         (setq wkk:samples-filter "")
       )
 
-      ;; Ã¿´ÎÆô¶¯Ä¬ÈÏÈ«Ñ¡
+      ;; æ¯æ¬¡å¯åŠ¨é»˜è®¤å…¨é€‰
       (setq wkk:samples-filter-en T)
       (setq wkk:samples-filter-cn T)
       (setq wkk:samples-filter-sys T)
@@ -1091,7 +1091,7 @@
                 (entmake
                   (list
                     '(0 . "TEXT")
-                    (cons 1 (strcat fname " : ÖĞÎÄÄÚÈİ"))
+                    (cons 1 (strcat fname " : ä¸­æ–‡å†…å®¹"))
                     (cons 7 stylename)
                     (list 10 cur-x cur-y 0.0)
                     (cons 40 text-hgt)
@@ -1128,7 +1128,7 @@
                   (setq fname (car (nth i font-list-filtered)))
                   (setq fpath (cdr (nth i font-list-filtered)))
                   (setq stylename (strcat "WKK_" (vl-string-subst "_" "." fname)))
-                  ;; ÑùÊ½²»´æÔÚÊ±ÏÈ´´½¨£¨ÎŞĞèÑùÕÅÊµÌå£©
+                  ;; æ ·å¼ä¸å­˜åœ¨æ—¶å…ˆåˆ›å»ºï¼ˆæ— éœ€æ ·å¼ å®ä½“ï¼‰
                   (if (null (tblobjname "STYLE" stylename))
                     (progn
                       (entmake
@@ -1149,17 +1149,17 @@
                           '(4 . "")
                         )
                       )
-                      (princ (strcat "\n[WKK] ÒÑ´´½¨ÑùÊ½: " stylename))
+                      (princ (strcat "\n[WKK] å·²åˆ›å»ºæ ·å¼: " stylename))
                     )
                   )
                   (setq *wkk-target-font* fname)
                   (setq *wkk-target-style* stylename)
-                  (princ (strcat "\n[WKK] ÒÑÉèÎªÌæ»»×ÖÌå: " fname " -> ÑùÊ½: " stylename))
+                  (princ (strcat "\n[WKK] å·²è®¾ä¸ºæ›¿æ¢å­—ä½“: " fname " -> æ ·å¼: " stylename))
                 )
-                (princ "\n[WKK] ÇëÑ¡ÔñÇ¡ºÃÒ»¸ö×ÖÌå")
+                (princ "\n[WKK] è¯·é€‰æ‹©æ°å¥½ä¸€ä¸ªå­—ä½“")
               )
             )
-            (princ "\n[WKK] Î´Ñ¡Ôñ×ÖÌå")
+            (princ "\n[WKK] æœªé€‰æ‹©å­—ä½“")
           )
         )
         (t
@@ -1171,15 +1171,15 @@
 )
 
 ;; ============================================================
-;;  µ¯³ö×ÖÌåÑ¡Ôñ¶Ô»°¿ò
+;;  å¼¹å‡ºå­—ä½“é€‰æ‹©å¯¹è¯æ¡†
 ;; ============================================================
 
-;; ·µ»ØÑ¡ÖĞ×ÖÌåµÄÍêÕûÂ·¾¶£¬È¡Ïû·µ»Ø nil
+;; è¿”å›é€‰ä¸­å­—ä½“çš„å®Œæ•´è·¯å¾„ï¼Œå–æ¶ˆè¿”å› nil
 (defun wkk:pick-font ( / font-list dcl_id code result i)
   (setq font-list (wkk:get-available-fonts))
   (if (= (length font-list) 0)
     (progn
-      (princ "\n[WKK] Î´ÕÒµ½ÈÎºÎ¿ÉÓÃ×ÖÌå")
+      (princ "\n[WKK] æœªæ‰¾åˆ°ä»»ä½•å¯ç”¨å­—ä½“")
       nil
     )
     (progn
@@ -1187,7 +1187,7 @@
       (setq dcl_id (load_dialog *wkk-dcl-file*))
       (if (not (new_dialog "wkk_font" dcl_id))
         (progn
-          (princ "\n[WKK] ×ÖÌå¶Ô»°¿ò¼ÓÔØÊ§°Ü")
+          (princ "\n[WKK] å­—ä½“å¯¹è¯æ¡†åŠ è½½å¤±è´¥")
           (unload_dialog dcl_id)
           nil
         )
@@ -1203,7 +1203,7 @@
             "(setq wkk:fsel (get_tile \"font_list\"))
              (if (/= wkk:fsel \"\")
                (done_dialog 1)
-               (princ \"\\n[WKK] ÇëÏÈÑ¡ÔñÒ»¸ö×ÖÌå\")
+               (princ \"\\n[WKK] è¯·å…ˆé€‰æ‹©ä¸€ä¸ªå­—ä½“\")
              )"
           )
           (action_tile "cancel" "(done_dialog 0)")
@@ -1214,14 +1214,14 @@
 
           (if (= code 0)
             (progn
-              (princ "\n[WKK] È¡ÏûÑ¡Ôñ×ÖÌå")
+              (princ "\n[WKK] å–æ¶ˆé€‰æ‹©å­—ä½“")
               nil
             )
             (progn
               (setq result (get_tile "font_list"))
               (if (or (null result) (= result ""))
                 (progn
-                  (princ "\n[WKK] Î´Ñ¡Ôñ×ÖÌå£¬ÒÑÈ¡Ïû")
+                  (princ "\n[WKK] æœªé€‰æ‹©å­—ä½“ï¼Œå·²å–æ¶ˆ")
                   nil
                 )
                 (progn
@@ -1238,10 +1238,10 @@
 )
 
 ;; ============================================================
-;;  Ò»¼üÌæ»»ËùÓĞÓĞÎÄ×ÖÊ¹ÓÃµÄÑùÊ½
+;;  ä¸€é”®æ›¿æ¢æ‰€æœ‰æœ‰æ–‡å­—ä½¿ç”¨çš„æ ·å¼
 ;; ============================================================
 
-;; ±éÀúËùÓĞ TEXTCOUNT>0 µÄÑùÊ½£¬Öğ¸öµ÷ÓÃ°²È«Ìæ»»£¨ĞÂ½¨ WKK_ Ç°×ºÑùÊ½ + Ç¨ÒÆÎÄ×Ö¶ÔÏó£©
+;; éå†æ‰€æœ‰ TEXTCOUNT>0 çš„æ ·å¼ï¼Œé€ä¸ªè°ƒç”¨å®‰å…¨æ›¿æ¢ï¼ˆæ–°å»º WKK_ å‰ç¼€æ ·å¼ + è¿ç§»æ–‡å­—å¯¹è±¡ï¼‰
 (defun wkk:replace-all-missing ( / i item name textcount count ok
                                 replaced-list total)
   (setq replaced-list '())
@@ -1258,18 +1258,18 @@
 
   (if (= total 0)
     (progn
-      (wkk:dbg "[WKK] Ã»ÓĞĞèÒªÌæ»»µÄÎÄ×ÖÑùÊ½£¨ËùÓĞÑùÊ½¾ùÎ´±»ÎÄ×Ö¶ÔÏóÊ¹ÓÃ£©")
+      (wkk:dbg "[WKK] æ²¡æœ‰éœ€è¦æ›¿æ¢çš„æ–‡å­—æ ·å¼ï¼ˆæ‰€æœ‰æ ·å¼å‡æœªè¢«æ–‡å­—å¯¹è±¡ä½¿ç”¨ï¼‰")
       nil
     )
     (progn
-      (wkk:dbg (strcat "[WKK] ==== Ò»¼üÌæ»»¿ªÊ¼£¬¹² " (itoa total) " ¸öÓĞÎÄ×ÖÊ¹ÓÃµÄÑùÊ½ ===="))
+      (wkk:dbg (strcat "[WKK] ==== ä¸€é”®æ›¿æ¢å¼€å§‹ï¼Œå…± " (itoa total) " ä¸ªæœ‰æ–‡å­—ä½¿ç”¨çš„æ ·å¼ ===="))
       (setq count 0)
       (foreach name replaced-list
-        (wkk:dbg (strcat "  -- ÑùÊ½: " name))
+        (wkk:dbg (strcat "  -- æ ·å¼: " name))
         (setq ok (wkk:replace-style-safe name))
         (if ok (setq count (1+ count)))
       )
-      (wkk:dbg (strcat "[WKK] ==== Ò»¼üÌæ»»Íê³É: ³É¹¦ "
+      (wkk:dbg (strcat "[WKK] ==== ä¸€é”®æ›¿æ¢å®Œæˆ: æˆåŠŸ "
                        (itoa count) "/" (itoa total) " ===="))
       (> count 0)
     )
@@ -1277,7 +1277,7 @@
 )
 
 ;; ============================================================
-;;  Ö÷ÃüÁî
+;;  ä¸»å‘½ä»¤
 ;; ============================================================
 
 (defun c:WKK ( / dcl_id code old-cmdecho sel-index wkk_replace_idx
@@ -1285,7 +1285,7 @@
   (setq old-cmdecho (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
 
-  ;; ---- Ô¤Ñ¡Ä£Ê½£ºÒÑÓĞµ¥¸öÎÄ×ÖÊµÌå±»Ñ¡ÖĞ ¡ú Ò»¼üÑ¡ÖĞÍ¬ÑùÊ½ ----
+  ;; ---- é¢„é€‰æ¨¡å¼ï¼šå·²æœ‰å•ä¸ªæ–‡å­—å®ä½“è¢«é€‰ä¸­ â†’ ä¸€é”®é€‰ä¸­åŒæ ·å¼ ----
   (setq pre-ss (cadr (ssgetfirst)))
   (if (and pre-ss
            (= (sslength pre-ss) 1)
@@ -1295,7 +1295,7 @@
            (setq pre-style (cdr (assoc 7 (entget pre-ent))))
            (/= pre-style ""))
     (wkk:select-all-by-style pre-style)
-    ;; ---- Õı³£Ä£Ê½£ºµ¯³ö½çÃæ ----
+    ;; ---- æ­£å¸¸æ¨¡å¼ï¼šå¼¹å‡ºç•Œé¢ ----
     (progn
       (wkk:collect-data)
 
@@ -1306,7 +1306,7 @@
 
         (if (not (new_dialog "wkk_dialog" dcl_id))
           (progn
-            (princ "\n[WKK] ¶Ô»°¿ò¼ÓÔØÊ§°Ü")
+            (princ "\n[WKK] å¯¹è¯æ¡†åŠ è½½å¤±è´¥")
             (unload_dialog dcl_id)
             (setq code 0)
           )
@@ -1319,27 +1319,27 @@
 
             (wkk:update-detail nil)
 
-            ;; ¼ÆËãÈ±Ê§ÊıÁ¿²¢¸üĞÂ×´Ì¬À¸
+            ;; è®¡ç®—ç¼ºå¤±æ•°é‡å¹¶æ›´æ–°çŠ¶æ€æ 
             (setq total-count (length *wkk-styles*))
             (setq missing-count 0)
             (foreach item *wkk-styles*
-              (if (= (nth 5 item) "È±Ê§!")
+              (if (= (nth 5 item) "ç¼ºå¤±!")
                 (setq missing-count (1+ missing-count))
               )
             )
             (set_tile "status"
-              (strcat "¹² " (itoa total-count) " ¸öÑùÊ½£¬"
+              (strcat "å…± " (itoa total-count) " ä¸ªæ ·å¼ï¼Œ"
                       (if (> missing-count 0)
-                        (strcat (itoa missing-count) " ¸ö×ÖÌåÈ±Ê§ [!]")
-                        "ËùÓĞ×ÖÌå¾ùÕı³£"
+                        (strcat (itoa missing-count) " ä¸ªå­—ä½“ç¼ºå¤± [!]")
+                        "æ‰€æœ‰å­—ä½“å‡æ­£å¸¸"
                       )
               )
             )
 
             (set_tile "font_info"
               (if *wkk-target-style*
-                (strcat "µ±Ç°Ìæ»»ÑùÊ½: " *wkk-target-style*)
-                (strcat "µ±Ç°Ìæ»»×ÖÌå: " *wkk-target-font* " (Î´Ñ¡ÔñÑùÕÅ)")
+                (strcat "å½“å‰æ›¿æ¢æ ·å¼: " *wkk-target-style*)
+                (strcat "å½“å‰æ›¿æ¢å­—ä½“: " *wkk-target-font* " (æœªé€‰æ‹©æ ·å¼ )")
               )
             )
 
@@ -1357,7 +1357,7 @@
                    (setq wkk_replace_idx (atoi wkk:sel))
                    (done_dialog 1)
                  )
-                 (princ \"\\n[WKK] ÇëÏÈÑ¡ÔñÒ»¸öÑùÊ½\")
+                 (princ \"\\n[WKK] è¯·å…ˆé€‰æ‹©ä¸€ä¸ªæ ·å¼\")
                )"
             )
 
@@ -1369,15 +1369,15 @@
                    (setq wkk_replace_idx (atoi wkk:sel))
                    (done_dialog 4)
                  )
-                 (princ \"\\n[WKK] ÇëÏÈÑ¡ÔñÒ»¸öÑùÊ½\")
+                 (princ \"\\n[WKK] è¯·å…ˆé€‰æ‹©ä¸€ä¸ªæ ·å¼\")
                )"
             )
             (action_tile "samples" "(done_dialog 5)")
             (action_tile "resetfont"
               "(setq *wkk-target-font* \"SimSun-ExtB\")
                (setq *wkk-target-style* nil)
-               (set_tile \"font_info\" \"µ±Ç°Ìæ»»×ÖÌå: SimSun-ExtB (Î´Ñ¡ÔñÑùÕÅ)\")
-               (princ \"\\n[WKK] ÒÑ»Ö¸´Ä¬ÈÏÌæ»»×ÖÌå: SimSun-ExtB\")"
+               (set_tile \"font_info\" \"å½“å‰æ›¿æ¢å­—ä½“: SimSun-ExtB (æœªé€‰æ‹©æ ·å¼ )\")
+               (princ \"\\n[WKK] å·²æ¢å¤é»˜è®¤æ›¿æ¢å­—ä½“: SimSun-ExtB\")"
             )
             (action_tile "refresh" "(done_dialog 2)")
             (action_tile "exit" "(done_dialog 0)")
@@ -1423,11 +1423,11 @@
 )
 
 ;; ============================================================
-;;  WKT - ´ÓÎÄ×ÖÊµÌå»ñÈ¡Ìæ»»ÑùÊ½£¨º¬×Ô¶¯ÇåÀí£©
-;;  1. Ê°È¡ÎÄ×ÖÊµÌå ¡ú ¶ÁÈ¡ÑùÊ½Ãû ¡ú ÉèÎªÌæ»»Ä¿±ê
-;;  2. É¾³ıËùÓĞ WKK_ ÑùÕÅÎÄ×ÖÊµÌå£¨Ìø¹ıÑ¡ÖĞÊµÌå£©
-;;  3. É¾³ıËùÓĞ WKK_ ÑùÊ½£¨±£ÁôÑ¡ÖĞÊµÌåµÄÑùÊ½£©
-;;  4. É¾³ıÑ¡ÖĞÊµÌå ¡ú ½ö±£ÁôÆäÑùÊ½
+;;  WKT - ä»æ–‡å­—å®ä½“è·å–æ›¿æ¢æ ·å¼ï¼ˆå«è‡ªåŠ¨æ¸…ç†ï¼‰
+;;  1. æ‹¾å–æ–‡å­—å®ä½“ â†’ è¯»å–æ ·å¼å â†’ è®¾ä¸ºæ›¿æ¢ç›®æ ‡
+;;  2. åˆ é™¤æ‰€æœ‰ WKK_ æ ·å¼ æ–‡å­—å®ä½“ï¼ˆè·³è¿‡é€‰ä¸­å®ä½“ï¼‰
+;;  3. åˆ é™¤æ‰€æœ‰ WKK_ æ ·å¼ï¼ˆä¿ç•™é€‰ä¸­å®ä½“çš„æ ·å¼ï¼‰
+;;  4. åˆ é™¤é€‰ä¸­å®ä½“ â†’ ä»…ä¿ç•™å…¶æ ·å¼
 ;; ============================================================
 
 (defun wkk:is-wkk-text (obj exclude-handle / oname style h)
@@ -1448,20 +1448,20 @@
 
 (defun c:WKT ( / ent ent-name ed style-name sel-handle doc
                 count-text count-style ps style-entry sname style-obj)
-  (princ "\n[WKT] Çëµã»÷Ò»¸öÑùÕÅÎÄ×ÖÊµÌå£¬½«ÆäÑùÊ½ÉèÎªÌæ»»ÑùÊ½")
-  (setq ent (entsel "\nÑ¡ÔñÎÄ×ÖÊµÌå: "))
+  (princ "\n[WKT] è¯·ç‚¹å‡»ä¸€ä¸ªæ ·å¼ æ–‡å­—å®ä½“ï¼Œå°†å…¶æ ·å¼è®¾ä¸ºæ›¿æ¢æ ·å¼")
+  (setq ent (entsel "\né€‰æ‹©æ–‡å­—å®ä½“: "))
   (if (null ent)
-    (princ "\n[WKT] ÒÑÈ¡Ïû")
+    (princ "\n[WKT] å·²å–æ¶ˆ")
     (progn
       (setq ent-name (car ent))
       (setq ed (entget ent-name))
       (cond
         ((not (member (cdr (assoc 0 ed)) '("TEXT" "MTEXT" "ATTDEF" "ATTRIB")))
-          (princ "\n[WKT] ÇëÑ¡ÔñÎÄ×ÖÊµÌå"))
+          (princ "\n[WKT] è¯·é€‰æ‹©æ–‡å­—å®ä½“"))
         (t
           (setq style-name (cdr (assoc 7 ed)))
           (if (or (null style-name) (= style-name ""))
-            (princ "\n[WKT] ¸ÃÊµÌåÎŞÓĞĞ§ÑùÊ½")
+            (princ "\n[WKT] è¯¥å®ä½“æ— æœ‰æ•ˆæ ·å¼")
             (progn
               (setq *wkk-target-style* style-name)
               (setq sel-handle (cdr (assoc 5 ed)))
@@ -1470,7 +1470,7 @@
               (setq count-text 0)
               (setq count-style 0)
 
-              ;; Step 1: É¾³ıËùÓĞ WKK_ ÑùÕÅÎÄ×ÖÊµÌå£¨Ìø¹ıÑ¡ÖĞÊµÌå£©
+              ;; Step 1: åˆ é™¤æ‰€æœ‰ WKK_ æ ·å¼ æ–‡å­—å®ä½“ï¼ˆè·³è¿‡é€‰ä¸­å®ä½“ï¼‰
               (vlax-for obj (vla-get-ModelSpace doc)
                 (if (wkk:is-wkk-text obj sel-handle)
                   (progn
@@ -1484,7 +1484,7 @@
                       (vl-catch-all-apply 'vla-delete (list obj))
                       (setq count-text (1+ count-text))))))
 
-              ;; Step 2: É¾³ıËùÓĞ WKK_ ÑùÊ½£¨±£ÁôÑ¡ÖĞÊµÌåµÄÑùÊ½£©
+              ;; Step 2: åˆ é™¤æ‰€æœ‰ WKK_ æ ·å¼ï¼ˆä¿ç•™é€‰ä¸­å®ä½“çš„æ ·å¼ï¼‰
               (setq style-entry (tblnext "STYLE" T))
               (while style-entry
                 (setq sname (cdr (assoc 2 style-entry)))
@@ -1501,18 +1501,18 @@
                         (setq count-style (1+ count-style))))))
                 (setq style-entry (tblnext "STYLE")))
 
-              ;; Step 3: É¾³ıÑ¡ÖĞÊµÌå
+              ;; Step 3: åˆ é™¤é€‰ä¸­å®ä½“
               (entdel ent-name)
 
               (setvar "CMDECHO" 1)
-              (princ (strcat "\n[WKT] Ìæ»»ÑùÊ½ÒÑÉèÎª: " style-name))
-              (princ (strcat "\n[WKT] ÒÑÇåÀí " (itoa count-text) " ¸öÑùÕÅÊµÌå¡¢"
-                             (itoa count-style) " ¸öÑùÊ½"))
-              (princ "\n[WKT] ÊäÈë WKK ¼´¿ÉÊ¹ÓÃ¡¸Ìæ»»×ÖÌå¡¹»ò¡¸Ò»¼üÌæ»»¡¹¡£")
+              (princ (strcat "\n[WKT] æ›¿æ¢æ ·å¼å·²è®¾ä¸º: " style-name))
+              (princ (strcat "\n[WKT] å·²æ¸…ç† " (itoa count-text) " ä¸ªæ ·å¼ å®ä½“ã€"
+                             (itoa count-style) " ä¸ªæ ·å¼"))
+              (princ "\n[WKT] è¾“å…¥ WKK å³å¯ä½¿ç”¨ã€Œæ›¿æ¢å­—ä½“ã€æˆ–ã€Œä¸€é”®æ›¿æ¢ã€ã€‚")
             )))))
     )
   (princ)
 )
 
-(princ "\n[WKK] ÒÑ¼ÓÔØ¡£ÊäÈë WKK Æô¶¯ÎÄ×ÖÑùÊ½¼ì²é£¬ÊäÈë WKT ´ÓÎÄ×ÖÊµÌå»ñÈ¡Ìæ»»ÑùÊ½¡£")
+(princ "\n[WKK] å·²åŠ è½½ã€‚è¾“å…¥ WKK å¯åŠ¨æ–‡å­—æ ·å¼æ£€æŸ¥ï¼Œè¾“å…¥ WKT ä»æ–‡å­—å®ä½“è·å–æ›¿æ¢æ ·å¼ã€‚")
 (princ)

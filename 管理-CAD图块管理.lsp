@@ -14,10 +14,15 @@
 (setq *selected_library_block_info* nil)  ;; List of selected block info (name, file_path, subfolder)
 (setq *library_quantities* nil)  ;; Quantities for library blocks
 (setq *library_path* nil)        ;; Path to block library folder
-(setq *insertion_scale* "1.0")   ;; Default insertion scale (1x or 0.1x)
+(setq *insertion_scale* nil)     ;; Insertion scale (1x or 0.1x) - loaded from saved settings on first use, defaults to 1x
 (setq *library_subfolders* nil)  ;; List of subfolders in library
 (setq *current_subfolder* nil)   ;; Currently selected subfolder
 (setq *subfolder_blocks* nil)    ;; Blocks organized by subfolder
+(setq *library_tabs_as_list* nil) ;; T when subfolder tabs are shown as a scrollable list instead of button rows
+(setq *library_favorites* nil)   ;; 当前已加载的图块库收藏夹路径列表
+(setq *bsdw_fav_seg_max* 8000)   ;; 收藏夹注册表分段存储：每段最大字节数（REG_SZ 上限 32767）
+(setq *bsdw_pending_name* nil)   ;; 创建图块命名对话框中暂存的名称（支持"拾取文字"刷新对话框后保留）
+(setq *bsdw_pending_basepoint* nil) ;; 创建图块命名对话框中暂存的基点选择："bp_tl"/"bp_tr"/"bp_bl"/"bp_br"/"bp_center"，默认左上
 
 (defun InitializeQuantityVariables (block_count / i var_name)
   "Initialize quantity variables dynamically based on block count"
@@ -68,9 +73,12 @@
   (setq *current_subfolder* nil)
   (setq *subfolder_blocks* nil)
   
-  ;; Initialize insertion scale to default (1x)
+  ;; Initialize insertion scale: keep current session value if already set,
+  ;; otherwise load the last saved preference, otherwise default to 1x
   (if (not *insertion_scale*)
-    (setq *insertion_scale* "1.0")
+    (if (not (LoadInsertionScale))
+      (setq *insertion_scale* "1.0")
+    )
   )
   
   ;; Get library path and scan for blocks
@@ -89,7 +97,7 @@
   (princ)
 )
 
-(defun ScanBlockLibrary (/ script_path library_path dir_list file_list block_name current_dir lisp_path subfolder_list subfolder_name subfolder_path subfolder_files)
+(defun ScanBlockLibrary (/ script_path library_path dir_list file_list block_name current_dir lisp_path subfolder_list subfolder_name subfolder_path subfolder_files saved_subfolder)
   "Scan block library folder for available block files and subfolders"
   
   ;; First try to load saved library path
@@ -197,9 +205,14 @@
         )
       )
       
-      ;; Set default current subfolder to "Main"
-      (setq *current_subfolder* "Main")
-      (setq *library_blocks* (GetBlocksForSubfolder "Main"))
+      ;; Restore the last-used category if it still exists in this library,
+      ;; otherwise fall back to "Main"
+      (setq saved_subfolder (LoadCurrentSubfolder))
+      (if (and saved_subfolder (member saved_subfolder *library_subfolders*))
+        (setq *current_subfolder* saved_subfolder)
+        (setq *current_subfolder* "Main")
+      )
+      (setq *library_blocks* (GetBlocksForSubfolder *current_subfolder*))
       
       ;; Debug information
       (princ (strcat "\n找到 " (itoa (length *library_subfolders*)) " 个文件夹"))
@@ -229,9 +242,62 @@
   (if subfolder_info subfolder_info nil)
 )
 
-(defun CreateLibraryDCLFile (filename / dcl_file i tab_index)
+(defun GetAdaptiveListHeight (/ screen_size screen_height calc_height)
+  "Calculate the BASE list_box height (in DCL units) purely from the current
+   AutoCAD drawing window / screen resolution. This is the static height
+   used for the first column's library_list, which does NOT change with
+   the number of category tab rows (that column already grows on its own
+   because the tab button rows sit above it and push the column taller)."
+  (setq screen_size (getvar "SCREENSIZE"))
+  (setq screen_height (cadr screen_size))
+  ;; Roughly ~22 pixels of drawing-window height per DCL height unit at typical DPI/font sizes
+  (setq calc_height (fix (/ screen_height 22.0)))
+  ;; Clamp the raw screen-based baseline
+  (if (< calc_height 18) (setq calc_height 18))
+  (if (> calc_height 45) (setq calc_height 45))
+  calc_height
+)
+
+(defun GetGrowingListHeight (base_height tab_rows / calc_height extra)
+  "Calculate the list_box height (in DCL units) for the second and third
+   columns (selected_list and fav_list), which have no tab buttons of
+   their own. Their list must grow along with the number of category tab
+   rows shown in the first column, so that all three columns' bottom
+   edges stay aligned near the bottom of the container as it grows taller.
+   base_height is the static baseline from GetAdaptiveListHeight; tab_rows
+   is the number of category tab rows shown above the first column's list
+   (already capped elsewhere at *library_max_tab_rows*, since beyond that
+   the tab area switches to a fixed-height scrollable list and stops
+   growing, so these lists should stop growing with it too)."
+  (if (not tab_rows) (setq tab_rows 1))
+  ;; Add ~2 units for each tab row beyond the first, since each extra row
+  ;; of category buttons in column 1 pushes the whole container taller.
+  (setq extra (* (max 0 (- tab_rows 1)) 2))
+  (setq calc_height (+ base_height extra))
+  ;; Never let the list shrink to an unusable size
+  (if (< calc_height 12) (setq calc_height 12))
+  calc_height
+)
+
+(defun CreateLibraryDCLFile (filename / dcl_file i tab_index list_height list_height2
+                              tabs_per_row max_tab_rows total_subfolders needed_rows capped_rows)
   "Create DCL file for library block selection dialog with tabs"
   (setq dcl_file (open filename "w"))
+  (setq tabs_per_row 5)
+  (setq max_tab_rows 5)
+  (setq total_subfolders (if *library_subfolders* (length *library_subfolders*) 0))
+  (setq needed_rows (if (> total_subfolders 0) (1+ (fix (/ (float (- total_subfolders 1)) tabs_per_row))) 0))
+  (setq capped_rows (min needed_rows max_tab_rows))
+  ;; Once the categories would need more than max_tab_rows of button rows,
+  ;; stop growing the dialog height and show them in a fixed-height,
+  ;; internally scrollable list instead.
+  (setq *library_tabs_as_list* (> needed_rows max_tab_rows))
+  ;; Column 1 (library_list): static height, independent of tab row count -
+  ;; that column already grows on its own because the tab rows sit above it.
+  (setq list_height (GetAdaptiveListHeight))
+  ;; Columns 2 & 3 (selected_list, fav_list): no tab rows of their own, so
+  ;; grow their list to track column 1's row count and keep bottoms aligned.
+  (setq list_height2 (GetGrowingListHeight list_height (max 1 capped_rows)))
   (if dcl_file
     (progn
       (write-line "bsdw_library : dialog {" dcl_file)
@@ -241,48 +307,59 @@
       (write-line "      label = \"可用图块\";" dcl_file)
       (write-line "      width = 25;" dcl_file)
       
-      ;; Add tab buttons for subfolders with multi-row layout (max 5 per row)
-      (if *library_subfolders*
-        (progn
-          (setq tab_index 1)
-          (setq tabs_per_row 5)
-          (setq current_row_count 0)
-          (setq row_started nil)
-          
-          (foreach subfolder_name *library_subfolders*
-            ;; Start new row if needed
-            (if (or (not row_started) (>= current_row_count tabs_per_row))
-              (progn
-                ;; Close previous row if exists
-                (if row_started
-                  (write-line "      }" dcl_file)
+      (cond
+        ;; Too many categories for button rows - show a fixed-height,
+        ;; scrollable list instead so the dialog height stops growing.
+        (*library_tabs_as_list*
+          (write-line "      : list_box {" dcl_file)
+          (write-line "        key = \"subfolder_list\";" dcl_file)
+          (write-line "        width = 25;" dcl_file)
+          (write-line (strcat "        height = " (itoa (* max_tab_rows 2)) ";") dcl_file)
+          (write-line "        multiple_select = false;" dcl_file)
+          (write-line "      }" dcl_file)
+        )
+        ;; Otherwise, add tab buttons for subfolders with multi-row layout (max 5 per row)
+        (*library_subfolders*
+          (progn
+            (setq tab_index 1)
+            (setq current_row_count 0)
+            (setq row_started nil)
+            
+            (foreach subfolder_name *library_subfolders*
+              ;; Start new row if needed
+              (if (or (not row_started) (>= current_row_count tabs_per_row))
+                (progn
+                  ;; Close previous row if exists
+                  (if row_started
+                    (write-line "      }" dcl_file)
+                  )
+                  ;; Start new row
+                  (write-line "      : row {" dcl_file)
+                  (write-line (strcat "        key = \"tab_row" (itoa (/ (- tab_index 1) tabs_per_row)) "\";") dcl_file)
+                  (setq current_row_count 0)
+                  (setq row_started T)
                 )
-                ;; Start new row
-                (write-line "      : row {" dcl_file)
-                (write-line (strcat "        key = \"tab_row" (itoa (/ (- tab_index 1) tabs_per_row)) "\";") dcl_file)
-                (setq current_row_count 0)
-                (setq row_started T)
               )
+              
+              ;; Add tab button
+              (write-line "        : button {" dcl_file)
+              (write-line (strcat "          key = \"tab_" (itoa tab_index) "\";") dcl_file)
+              (write-line (strcat "          label = \"" subfolder_name "\";") dcl_file)
+              (write-line "          width = 8;" dcl_file)
+              (write-line "          fixed_width = true;" dcl_file)
+              (if (equal subfolder_name *current_subfolder*)
+                (write-line "          is_default = true;" dcl_file)
+              )
+              (write-line "        }" dcl_file)
+              
+              (setq tab_index (+ tab_index 1))
+              (setq current_row_count (+ current_row_count 1))
             )
             
-            ;; Add tab button
-            (write-line "        : button {" dcl_file)
-            (write-line (strcat "          key = \"tab_" (itoa tab_index) "\";") dcl_file)
-            (write-line (strcat "          label = \"" subfolder_name "\";") dcl_file)
-            (write-line "          width = 8;" dcl_file)
-            (write-line "          fixed_width = true;" dcl_file)
-            (if (equal subfolder_name *current_subfolder*)
-              (write-line "          is_default = true;" dcl_file)
+            ;; Close the last row
+            (if row_started
+              (write-line "      }" dcl_file)
             )
-            (write-line "        }" dcl_file)
-            
-            (setq tab_index (+ tab_index 1))
-            (setq current_row_count (+ current_row_count 1))
-          )
-          
-          ;; Close the last row
-          (if row_started
-            (write-line "      }" dcl_file)
           )
         )
       )
@@ -290,7 +367,8 @@
       (write-line "      : list_box {" dcl_file)
       (write-line "        key = \"library_list\";" dcl_file)
       (write-line "        width = 20;" dcl_file)
-      (write-line "        height = 30;" dcl_file)
+      (write-line (strcat "        height = " (itoa list_height) ";") dcl_file)
+      (write-line "        alignment = \"fill\";" dcl_file)
       (write-line "        multiple_select = false;" dcl_file)
       (write-line "      }" dcl_file)
       (write-line "      : boxed_column {" dcl_file)
@@ -312,47 +390,43 @@
       (write-line "      }" dcl_file)
       (write-line "    }" dcl_file)
       (write-line "    : boxed_column {" dcl_file)
-      (write-line "      label = \"已选图块及数量\";" dcl_file)
+      (write-line "      label = \"已选图块\";" dcl_file)
       (write-line "      width = 30;" dcl_file)
-      (write-line "      : column {" dcl_file)
-      (write-line "        key = \"selected_column\";" dcl_file)
+      (write-line "      : list_box {" dcl_file)
+      (write-line "        key = \"selected_list\";" dcl_file)
       (write-line "        width = 25;" dcl_file)
-      (write-line "        height = 15;" dcl_file)
-      (write-line "        : text {" dcl_file)
-      (write-line "          key = \"selected_status\";" dcl_file)
-      (write-line "          label = \"未选择图块\";" dcl_file)
-      (write-line "        }" dcl_file)
-      
-      ;; Dynamic content for selected blocks will be added here
-      (if *selected_library_blocks*
-        (progn
-          (setq i 1)
-          (repeat (length *selected_library_blocks*)
-            (write-line "        : row {" dcl_file)
-            (write-line (strcat "          key = \"selected_row" (itoa i) "\";") dcl_file)
-            (write-line "          : button {" dcl_file)
-            (write-line (strcat "            key = \"remove_btn" (itoa i) "\";") dcl_file)
-            (write-line "            label = \"-\";" dcl_file)
-            (write-line "            width = 3;" dcl_file)
-            (write-line "            fixed_width = true;" dcl_file)
-            (write-line "          }" dcl_file)
-            (write-line "          : text {" dcl_file)
-            (write-line (strcat "            key = \"selected_name" (itoa i) "\";") dcl_file)
-            (write-line (strcat "            label = \"图块 " (itoa i) "\";") dcl_file)
-            (write-line "            width = 12;" dcl_file)
-            (write-line "          }" dcl_file)
-            (write-line "          : edit_box {" dcl_file)
-            (write-line (strcat "            key = \"lib_quantity" (itoa i) "\";") dcl_file)
-            (write-line "            value = \"1\";" dcl_file)
-            (write-line "            width = 6;" dcl_file)
-            (write-line "            edit_width = 6;" dcl_file)
-            (write-line "          }" dcl_file)
-            (write-line "        }" dcl_file)
-            (setq i (+ i 1))
-          )
-        )
-      )
-      
+      (write-line (strcat "        height = " (itoa list_height2) ";") dcl_file)
+      (write-line "        alignment = \"fill\";" dcl_file)
+      (write-line "        multiple_select = false;" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : text {" dcl_file)
+      (write-line "        key = \"selected_status\";" dcl_file)
+      (write-line "        label = \"未选择图块\";" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "    : boxed_column {" dcl_file)
+      (write-line "      label = \"收藏夹\";" dcl_file)
+      (write-line "      width = 22;" dcl_file)
+      (write-line "      : list_box {" dcl_file)
+      (write-line "        key = \"fav_list\";" dcl_file)
+      (write-line "        width = 20;" dcl_file)
+      (write-line (strcat "        height = " (itoa list_height2) ";") dcl_file)
+      (write-line "        alignment = \"fill\";" dcl_file)
+      (write-line "        multiple_select = false;" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : spacer { height = 1; }" dcl_file)
+      (write-line "      : button {" dcl_file)
+      (write-line "        key = \"fav_add_btn\";" dcl_file)
+      (write-line "        label = \"加入收藏\";" dcl_file)
+      (write-line "        fixed_width = true;" dcl_file)
+      (write-line "        width = 20;" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : spacer { height = 0; }" dcl_file)
+      (write-line "      : button {" dcl_file)
+      (write-line "        key = \"fav_del_btn\";" dcl_file)
+      (write-line "        label = \"删除选中\";" dcl_file)
+      (write-line "        fixed_width = true;" dcl_file)
+      (write-line "        width = 20;" dcl_file)
       (write-line "      }" dcl_file)
       (write-line "    }" dcl_file)
       (write-line "  }" dcl_file)
@@ -363,8 +437,18 @@
       (write-line "      width = 15;" dcl_file)
       (write-line "    }" dcl_file)
       (write-line "    : button {" dcl_file)
+      (write-line "      key = \"open_path\";" dcl_file)
+      (write-line "      label = \"打开\";" dcl_file)
+      (write-line "      width = 8;" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "    : button {" dcl_file)
       (write-line "      key = \"clear_selection\";" dcl_file)
       (write-line "      label = \"全部清除\";" dcl_file)
+      (write-line "      width = 12;" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "    : button {" dcl_file)
+      (write-line "      key = \"create_block_btn\";" dcl_file)
+      (write-line "      label = \"创建图块\";" dcl_file)
       (write-line "      width = 12;" dcl_file)
       (write-line "    }" dcl_file)
       (write-line "    : spacer { width = 1; }" dcl_file)
@@ -384,8 +468,22 @@
     (progn
       (setq *current_subfolder* subfolder_name)
       (setq *library_blocks* (GetBlocksForSubfolder subfolder_name))
-      ;; Refresh dialog
-      (done_dialog 2)
+      ;; Remember this category so BSDW reopens on it next time
+      (SaveCurrentSubfolder subfolder_name)
+      ;; Update the library list in-place - no need to rebuild/reload the dialog
+      (UpdateLibraryList)
+    )
+  )
+)
+
+(defun HandleSubfolderListSelection (selection_value / selected_index subfolder_name)
+  "Handle a click on the scrollable category list (used when there are too
+   many subfolders to show as tab-button rows)"
+  (setq selected_index (atoi selection_value))
+  (if (and (>= selected_index 0) (< selected_index (length *library_subfolders*)))
+    (progn
+      (setq subfolder_name (nth selected_index *library_subfolders*))
+      (SwitchToSubfolder subfolder_name)
     )
   )
 )
@@ -412,18 +510,17 @@
   )
 )
 
-(defun UpdateSelectedLibraryBlocks (/ status_text i block_name block_info subfolder current_qty display_name)
+(defun UpdateSelectedLibraryBlocks (/ status_text i block_name block_info subfolder display_name)
   "Update selected blocks display - support duplicate block names"
   (if *selected_library_blocks*
     (progn
       (setq status_text (strcat (itoa (length *selected_library_blocks*)) " 个图块已选"))
       (set_tile "selected_status" status_text)
       
-      ;; Update individual block displays
+      ;; Populate the selected blocks list box
+      (start_list "selected_list")
       (setq i 1)
       (foreach block_name *selected_library_blocks*
-        (setq current_qty (itoa (nth (- i 1) *library_quantities*)))
-        
         ;; Get subfolder info if available
         (if (and *selected_library_block_info* 
                  (>= (length *selected_library_block_info*) i))
@@ -440,36 +537,55 @@
           (setq display_name (strcat (itoa i) ". " block_name))
         )
         
-        (set_tile (strcat "selected_name" (itoa i)) display_name)
-        (set_tile (strcat "lib_quantity" (itoa i)) current_qty)
+        (add_list display_name)
         (setq i (+ i 1))
       )
+      (end_list)
     )
     (progn
       (setq status_text "未选择图块")
       (set_tile "selected_status" status_text)
+      (start_list "selected_list")
+      (end_list)
     )
   )
 )
 
-(defun HandleLibrarySelection (selection_value / selected_index block_name block_info file_path)
-  "Handle library list selection - allow duplicate selections"
+(defun HandleLibrarySelection (selection_value / selected_index block_name block_info file_path complete_block_info existing_pos i entry)
+  "Handle library list click - toggle selection: 1st click adds to the
+   selected list, 2nd click on the SAME item removes it again, and so on."
   (setq selected_index (atoi selection_value))
   (if (and (>= selected_index 0) (< selected_index (length *library_blocks*)))
     (progn
-      (setq block_info (nth selected_index *library_blocks*))
-      (setq block_name (car block_info))
-      (setq file_path (cadr block_info))
-      
-      ;; Create complete block info with current subfolder context
-      (setq complete_block_info (list block_name file_path *current_subfolder*))
-      
-      ;; Always add to selected blocks (allow duplicates for different segments)
-      (setq *selected_library_blocks* (append *selected_library_blocks* (list block_name)))
-      (setq *selected_library_block_info* (append *selected_library_block_info* (list complete_block_info)))
-      (setq *library_quantities* (append *library_quantities* (list 1)))
-      ;; Refresh dialog to show new selection
-      (done_dialog 2) ;; Special return code to refresh dialog
+      ;; Check whether this library item (by its index) is already selected
+      (setq existing_pos nil)
+      (setq i 1)
+      (foreach entry *selected_library_block_info*
+        (if (and (not existing_pos) (equal (nth 3 entry) selected_index))
+          (setq existing_pos i)
+        )
+        (setq i (+ i 1))
+      )
+      (if existing_pos
+        ;; Already selected -> this click removes it from the selection
+        (RemoveLibrarySelection existing_pos)
+        ;; Not selected yet -> this click adds it to the selection
+        (progn
+          (setq block_info (nth selected_index *library_blocks*))
+          (setq block_name (car block_info))
+          (setq file_path (cadr block_info))
+          
+          ;; Create complete block info with current subfolder context,
+          ;; plus the source index so a later click can find it again
+          (setq complete_block_info (list block_name file_path *current_subfolder* selected_index))
+          
+          (setq *selected_library_blocks* (append *selected_library_blocks* (list block_name)))
+          (setq *selected_library_block_info* (append *selected_library_block_info* (list complete_block_info)))
+          (setq *library_quantities* (append *library_quantities* (list 1)))
+          ;; Update the selected list in-place - no need to rebuild/reload the dialog
+          (UpdateSelectedLibraryBlocks)
+        )
+      )
     )
   )
 )
@@ -507,6 +623,26 @@
       (princ "\n文件夹选择已取消。")
     )
   )
+)
+
+(defun OpenLibraryFolder ( / )
+  "Open the currently set library path folder in Windows Explorer"
+  (cond
+    ((not *library_path*)
+     (princ "\n尚未设置库路径，请先点击\"设置库路径\"。")
+    )
+    ((not (vl-file-directory-p *library_path*))
+     (princ (strcat "\n路径不存在或不是文件夹：" *library_path*))
+    )
+    (T
+     (if (vl-catch-all-error-p
+           (vl-catch-all-apply 'startapp (list "explorer.exe" *library_path*)))
+       (princ (strcat "\n无法打开文件夹：" *library_path*))
+       (princ (strcat "\n已打开文件夹：" *library_path*))
+     )
+    )
+  )
+  (princ)
 )
 
 (defun SelectFolderDialog (title / shell folder_obj selected_folder)
@@ -568,13 +704,635 @@
   )
 )
 
+;; ============================================================
+;;  图块库收藏夹（分段存储路径列表，防止单键超 REG_SZ 上限 32767 字节）
+;; ============================================================
+
+;; 用分隔符连接字符串列表为单字符串（如 ("a" "b") "|" -> "a|b"）
+(defun JoinFavoritesWithSep (lst sep / result)
+  (if (not lst) ""
+    (progn
+      (setq result (car lst))
+      (setq lst (cdr lst))
+      (while lst
+        (setq result (strcat result sep (car lst)))
+        (setq lst (cdr lst))
+      )
+      result
+    )
+  )
+)
+
+;; 按分隔符切分字符串为列表（如 "a|b" "|" -> ("a" "b")）
+(defun SplitFavoritesBySep (str sep / result sep-len total i part done)
+  (setq result '())
+  (if (or (not str) (= str ""))
+    result
+    (progn
+      (setq sep-len (strlen sep))
+      (setq total (strlen str))
+      (setq i 1)
+      (setq part "")
+      (setq done nil)
+      (while (and (not done) (<= i total))
+        (if (and (<= (+ i (- sep-len 1)) total)
+                 (= (substr str i sep-len) sep))
+          (progn
+            (setq result (append result (list part)))
+            (setq part "")
+            (setq i (+ i sep-len))
+          )
+          (progn
+            (setq part (strcat part (substr str i 1)))
+            (setq i (1+ i))
+          )
+        )
+      )
+      (setq result (append result (list part)))
+      result
+    )
+  )
+)
+
+;; 保存图块库收藏夹列表到注册表（分段存储）
+(defun SaveLibraryFavorites (fav-list / joined total seg-count idx chunk key)
+  (setq joined (JoinFavoritesWithSep fav-list "|"))
+  (setq total (strlen joined))
+  (setq seg-count 0)
+  (if (> total 0)
+    (progn
+      (setq seg-count (/ (+ total *bsdw_fav_seg_max* -1) *bsdw_fav_seg_max*))
+      (vl-registry-write
+        "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW_Favorites"
+        "BSDW_FAV_COUNT"
+        (itoa seg-count)
+      )
+      (setq idx 0)
+      (while (< idx seg-count)
+        (setq chunk (substr joined (+ 1 (* idx *bsdw_fav_seg_max*)) *bsdw_fav_seg_max*))
+        (setq key (strcat "BSDW_FAV_" (itoa idx)))
+        (vl-registry-write
+          "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW_Favorites"
+          key
+          chunk
+        )
+        (setq idx (1+ idx))
+      )
+    )
+    (vl-registry-write
+      "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW_Favorites"
+      "BSDW_FAV_COUNT"
+      "0"
+    )
+  )
+)
+
+;; 从注册表加载图块库收藏夹列表（分段读取并拼接）
+(defun LoadLibraryFavorites ( / seg-count joined idx key chunk)
+  (setq seg-count (vl-registry-read
+    "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW_Favorites"
+    "BSDW_FAV_COUNT"
+  ))
+  (if seg-count
+    (progn
+      (setq seg-count (atoi seg-count))
+      (if (> seg-count 0)
+        (progn
+          (setq joined "")
+          (setq idx 0)
+          (while (< idx seg-count)
+            (setq key (strcat "BSDW_FAV_" (itoa idx)))
+            (setq chunk (vl-registry-read
+              "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW_Favorites"
+              key
+            ))
+            (if chunk
+              (setq joined (strcat joined chunk))
+            )
+            (setq idx (1+ idx))
+          )
+          (if (/= joined "")
+            (SplitFavoritesBySep joined "|")
+            '()
+          )
+        )
+        '()
+      )
+    )
+    '()
+  )
+)
+
+;; 获取收藏夹中文件夹的显示名称（取最后一级文件夹名）
+(defun GetFavoriteDisplayName (folder / last-part)
+  (setq folder (vl-string-right-trim "\\" folder))
+  (setq last-part folder)
+  (while (vl-string-search "\\" last-part)
+    (setq last-part (substr last-part (+ (vl-string-search "\\" last-part) 2)))
+  )
+  (if (or (not last-part) (= last-part ""))
+    folder
+    last-part
+  )
+)
+
+;; 刷新收藏夹列表显示（带文件夹图标），并高亮与当前库路径匹配的收藏项
+(defun RefreshFavoriteList ( / fav-list i cur-norm f-norm)
+  (setq fav-list (LoadLibraryFavorites))
+  (setq *library_favorites* fav-list)
+  (start_list "fav_list")
+  (foreach f fav-list
+    (add_list (strcat "  \004  " (GetFavoriteDisplayName f) "  "))
+  )
+  (end_list)
+  ;; 若当前库路径就是某个收藏夹，刷新后重新选中该项，避免选中状态丢失
+  (if *library_path*
+    (progn
+      (setq cur-norm (strcase (vl-string-right-trim "\\" *library_path*)))
+      (setq i 0)
+      (foreach f fav-list
+        (setq f-norm (strcase (vl-string-right-trim "\\" f)))
+        (if (equal f-norm cur-norm)
+          (set_tile "fav_list" (itoa i))
+        )
+        (setq i (1+ i))
+      )
+    )
+  )
+)
+
+;; 收藏夹列表：单击切换图块库路径（刷新后会自动重新高亮该项，见 RefreshFavoriteList）
+(defun HandleFavoriteListSelection (selection_value / selected_index fav_path)
+  "Switch the block library path to the selected favorite folder"
+  (setq selected_index (atoi selection_value))
+  (setq fav_path (nth selected_index *library_favorites*))
+  (if (and fav_path (vl-file-directory-p fav_path))
+    (progn
+      (setq *library_path* fav_path)
+      (SaveLibraryPath fav_path)
+      (if (ScanBlockLibrary)
+        (progn
+          (setq *selected_library_blocks* nil)
+          (setq *selected_library_block_info* nil)
+          (setq *library_quantities* nil)
+          ;; Refresh dialog to show the newly switched library
+          (done_dialog 2)
+        )
+        (princ "\n该收藏夹中未找到可用图块。")
+      )
+    )
+    (princ "\n收藏夹路径无效。")
+  )
+)
+
+;; 加入收藏按钮：将当前图块库路径加入收藏夹
+(defun AddCurrentPathToFavorites ( / fav-list)
+  (if (and *library_path* (vl-file-directory-p *library_path*))
+    (progn
+      (setq fav-list (LoadLibraryFavorites))
+      (if (not (member (strcase *library_path*) (mapcar 'strcase fav-list)))
+        (progn
+          (setq fav-list (append fav-list (list *library_path*)))
+          (SaveLibraryFavorites fav-list)
+          (RefreshFavoriteList)
+          (princ (strcat "\n已加入收藏：" (GetFavoriteDisplayName *library_path*)))
+        )
+        (princ "\n该文件夹已在收藏夹中。")
+      )
+    )
+    (princ "\n当前库路径无效，无法加入收藏。")
+  )
+)
+
+;; 删除收藏按钮：删除收藏夹列表中选中的项
+(defun RemoveSelectedFavorite ( / selected_index fav_to_del fav-list)
+  (setq selected_index (get_tile "fav_list"))
+  (if (and selected_index (/= selected_index ""))
+    (progn
+      (setq fav-list (LoadLibraryFavorites))
+      (setq fav_to_del (nth (atoi selected_index) fav-list))
+      (if fav_to_del
+        (progn
+          (setq fav-list
+            (vl-remove-if
+              (function (lambda (x) (equal (strcase x) (strcase fav_to_del))))
+              fav-list
+            )
+          )
+          (SaveLibraryFavorites fav-list)
+          (RefreshFavoriteList)
+          (princ (strcat "\n已删除收藏：" (GetFavoriteDisplayName fav_to_del)))
+        )
+      )
+    )
+    (princ "\n请先选择要删除的收藏项。")
+  )
+)
+
+;; ============================================================
+;;  从图纸选择创建新图块，保存到当前选定的库分类文件夹
+;; ============================================================
+
+;; ============================================================
+;;  图块命名对话框（支持手动输入 / 拾取图纸中的文字作为名称）
+;; ============================================================
+
+;; 生成命名对话框的DCL文件
+(defun CreateNameInputDCLFile (filename / dcl_file)
+  (setq dcl_file (open filename "w"))
+  (if dcl_file
+    (progn
+      (write-line "bsdw_name_input : dialog {" dcl_file)
+      (write-line "  label = \"输入图块名称\";" dcl_file)
+      (write-line "  : row {" dcl_file)
+      (write-line "    : edit_box {" dcl_file)
+      (write-line "      key = \"name_edit\";" dcl_file)
+      (write-line "      label = \"名称:\";" dcl_file)
+      (write-line "      edit_width = 30;" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "    : button {" dcl_file)
+      (write-line "      key = \"pick_txt_btn\";" dcl_file)
+      (write-line "      label = \"拾取文字\";" dcl_file)
+      (write-line "      fixed_width = true;" dcl_file)
+      (write-line "      width = 10;" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "  }" dcl_file)
+      (write-line "  : row {" dcl_file)
+      (write-line "    : text {" dcl_file)
+      (write-line "      label = \"基点:\";" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "    : radio_row {" dcl_file)
+      (write-line "      key = \"basepoint_group\";" dcl_file)
+      (write-line "      : radio_button {" dcl_file)
+      (write-line "        key = \"bp_tl\";" dcl_file)
+      (write-line "        label = \"左上\";" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : radio_button {" dcl_file)
+      (write-line "        key = \"bp_tr\";" dcl_file)
+      (write-line "        label = \"右上\";" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : radio_button {" dcl_file)
+      (write-line "        key = \"bp_bl\";" dcl_file)
+      (write-line "        label = \"左下\";" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : radio_button {" dcl_file)
+      (write-line "        key = \"bp_br\";" dcl_file)
+      (write-line "        label = \"右下\";" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "      : radio_button {" dcl_file)
+      (write-line "        key = \"bp_center\";" dcl_file)
+      (write-line "        label = \"几何中心\";" dcl_file)
+      (write-line "      }" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "  }" dcl_file)
+      (write-line "  : row {" dcl_file)
+      (write-line "    : button {" dcl_file)
+      (write-line "      key = \"ok\";" dcl_file)
+      (write-line "      label = \"确定\";" dcl_file)
+      (write-line "      is_default = true;" dcl_file)
+      (write-line "      width = 10;" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "    : button {" dcl_file)
+      (write-line "      key = \"cancel\";" dcl_file)
+      (write-line "      label = \"取消\";" dcl_file)
+      (write-line "      is_cancel = true;" dcl_file)
+      (write-line "      width = 10;" dcl_file)
+      (write-line "    }" dcl_file)
+      (write-line "  }" dcl_file)
+      (write-line "}" dcl_file)
+      (close dcl_file)
+      T
+    )
+    nil
+  )
+)
+
+;; 去除MTEXT字符串中的常见格式控制码（\A、\f、\C、\H、\W 等及 {} 分组），
+;; 便于把选中的文字内容用作干净的图块名称
+(defun CleanMTextFormatting (str / result i ch len)
+  (setq result "")
+  (setq i 1)
+  (setq len (strlen str))
+  (while (<= i len)
+    (setq ch (substr str i 1))
+    (cond
+      ;; 转义反斜杠 \\  -> 字面反斜杠
+      ((and (= ch "\\") (<= (1+ i) len) (= (substr str (1+ i) 1) "\\"))
+       (setq result (strcat result "\\"))
+       (setq i (+ i 2))
+      )
+      ;; 段落换行 \P 或 \p -> 当作空格处理
+      ((and (= ch "\\") (<= (1+ i) len) (member (substr str (1+ i) 1) (list "P" "p")))
+       (setq result (strcat result " "))
+       (setq i (+ i 2))
+      )
+      ;; 其它格式控制码：\<字母>...; -> 整段跳过
+      ((and (= ch "\\") (<= (1+ i) len))
+       (setq i (+ i 2))
+       (while (and (<= i len) (/= (substr str i 1) ";"))
+         (setq i (1+ i))
+       )
+       (setq i (1+ i))
+      )
+      ;; 花括号分组符号 -> 丢弃
+      ((or (= ch "{") (= ch "}"))
+       (setq i (1+ i))
+      )
+      (T
+       (setq result (strcat result ch))
+       (setq i (1+ i))
+      )
+    )
+  )
+  result
+)
+
+;; 将字符串中不允许出现在图块/文件名中的字符替换为下划线
+(defun SanitizeBlockName (str / result ch i len bad)
+  (setq bad (list " " "<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "`"))
+  (setq result "")
+  (setq i 1)
+  (setq len (strlen str))
+  (while (<= i len)
+    (setq ch (substr str i 1))
+    (if (member ch bad)
+      (setq result (strcat result "_"))
+      (setq result (strcat result ch))
+    )
+    (setq i (1+ i))
+  )
+  result
+)
+
+;; 拾取图纸中的一个文字对象(TEXT/MTEXT/属性定义)，返回其文字内容
+(defun PickTextForBlockName ( / ent_result ent edata etype text_str)
+  (setq ent_result (entsel "\n请选择一个文字对象(TEXT/MTEXT)，将以其内容作为图块名称: "))
+  (if ent_result
+    (progn
+      (setq ent (car ent_result))
+      (setq edata (entget ent))
+      (setq etype (cdr (assoc 0 edata)))
+      (if (member etype (list "TEXT" "MTEXT" "ATTDEF"))
+        (progn
+          (setq text_str (cdr (assoc 1 edata)))
+          (if (= etype "MTEXT")
+            (setq text_str (CleanMTextFormatting text_str))
+          )
+          (setq text_str (vl-string-trim " \t" text_str))
+          (if (= text_str "")
+            (progn
+              (princ "\n所选文字对象内容为空。")
+              nil
+            )
+            text_str
+          )
+        )
+        (progn
+          (princ "\n所选对象不是文字(TEXT/MTEXT)对象。")
+          nil
+        )
+      )
+    )
+    nil
+  )
+)
+
+;; 显示命名对话框，让用户手动输入或点击"拾取文字"从图纸中选取文字作为名称
+;; 返回校验通过的图块名称，取消则返回 nil
+(defun GetBlockNameFromDialog ( / dcl_id result continue_loop temp_file entered_name picked_text)
+  (if (not *bsdw_pending_name*)
+    (setq *bsdw_pending_name* "")
+  )
+  (if (not *bsdw_pending_basepoint*)
+    (setq *bsdw_pending_basepoint* "bp_tl")
+  )
+  (setq continue_loop T)
+  (setq entered_name nil)
+  (while continue_loop
+    (setq temp_file (strcat (getvar "TEMPPREFIX") "bsdw_name_dialog.dcl"))
+    (CreateNameInputDCLFile temp_file)
+    (setq dcl_id (load_dialog temp_file))
+    (if (< dcl_id 0)
+      (progn
+        (alert "无法加载命名对话框。")
+        (setq continue_loop nil)
+      )
+      (progn
+        (if (not (new_dialog "bsdw_name_input" dcl_id))
+          (progn
+            (alert "无法初始化命名对话框。")
+            (setq continue_loop nil)
+          )
+          (progn
+            (set_tile "name_edit" *bsdw_pending_name*)
+            ;; 回填基点单选框的选中状态（5选1：左上/右上/左下/右下/几何中心）
+            (set_tile "bp_tl" (if (= *bsdw_pending_basepoint* "bp_tl") "1" "0"))
+            (set_tile "bp_tr" (if (= *bsdw_pending_basepoint* "bp_tr") "1" "0"))
+            (set_tile "bp_bl" (if (= *bsdw_pending_basepoint* "bp_bl") "1" "0"))
+            (set_tile "bp_br" (if (= *bsdw_pending_basepoint* "bp_br") "1" "0"))
+            (set_tile "bp_center" (if (= *bsdw_pending_basepoint* "bp_center") "1" "0"))
+            (action_tile "bp_tl" "(setq *bsdw_pending_basepoint* \"bp_tl\")")
+            (action_tile "bp_tr" "(setq *bsdw_pending_basepoint* \"bp_tr\")")
+            (action_tile "bp_bl" "(setq *bsdw_pending_basepoint* \"bp_bl\")")
+            (action_tile "bp_br" "(setq *bsdw_pending_basepoint* \"bp_br\")")
+            (action_tile "bp_center" "(setq *bsdw_pending_basepoint* \"bp_center\")")
+            ;; 拾取文字：先保存当前编辑框内容，再关闭对话框以便在图纸上拾取
+            (action_tile "pick_txt_btn"
+              "(setq *bsdw_pending_name* (get_tile \"name_edit\")) (done_dialog 2)"
+            )
+            (action_tile "ok"
+              "(setq *bsdw_pending_name* (get_tile \"name_edit\")) (done_dialog 1)"
+            )
+            (action_tile "cancel" "(done_dialog 0)")
+            (setq result (start_dialog))
+            (cond
+              ((= result 1)
+                (cond
+                  ((or (not *bsdw_pending_name*) (= *bsdw_pending_name* ""))
+                   (alert "名称不能为空，请重新输入。")
+                  )
+                  ((not (snvalid *bsdw_pending_name*))
+                   (alert "名称中含有非法字符，请重新输入。")
+                  )
+                  (T
+                   (setq entered_name *bsdw_pending_name*)
+                   (setq continue_loop nil)
+                  )
+                )
+              )
+              ((= result 2)
+                ;; 拾取文字按钮：对话框已关闭，可安全在图纸上拾取对象
+                (setq picked_text (PickTextForBlockName))
+                (if picked_text
+                  (setq *bsdw_pending_name* (SanitizeBlockName picked_text))
+                )
+                ;; 循环继续，重新打开命名对话框并回填拾取到的内容
+              )
+              (T
+                (setq continue_loop nil)
+              )
+            )
+          )
+        )
+        (unload_dialog dcl_id)
+        (vl-file-delete temp_file)
+      )
+    )
+  )
+  entered_name
+)
+
+;; 根据选择集中所有对象的整体包围盒，按命名对话框中选择的基点模式计算插入基点
+;; mode: "bp_tl"=左上  "bp_tr"=右上  "bp_bl"=左下  "bp_br"=右下  "bp_center"=几何中心
+;; 若选择集为空、或所有对象的包围盒计算均失败，则返回 nil（由调用方决定后备方案）
+(defun ComputeLibraryBlockBasePoint (ss mode / i n ent vla_obj min_pt max_pt
+                                          box_min box_max got_box
+                                          overall_min_x overall_min_y overall_min_z
+                                          overall_max_x overall_max_y overall_max_z
+                                          mid_z)
+  (setq n (sslength ss))
+  (setq i 0)
+  (setq got_box nil)
+  (while (< i n)
+    (setq ent (ssname ss i))
+    (setq vla_obj (vlax-ename->vla-object ent))
+    (if (not (vl-catch-all-error-p
+               (vl-catch-all-apply 'vla-GetBoundingBox (list vla_obj 'min_pt 'max_pt))))
+      (progn
+        (setq box_min (vlax-safearray->list min_pt))
+        (setq box_max (vlax-safearray->list max_pt))
+        (if (not got_box)
+          (progn
+            (setq overall_min_x (car box_min))
+            (setq overall_min_y (cadr box_min))
+            (setq overall_min_z (caddr box_min))
+            (setq overall_max_x (car box_max))
+            (setq overall_max_y (cadr box_max))
+            (setq overall_max_z (caddr box_max))
+            (setq got_box T)
+          )
+          (progn
+            (if (< (car box_min) overall_min_x) (setq overall_min_x (car box_min)))
+            (if (< (cadr box_min) overall_min_y) (setq overall_min_y (cadr box_min)))
+            (if (< (caddr box_min) overall_min_z) (setq overall_min_z (caddr box_min)))
+            (if (> (car box_max) overall_max_x) (setq overall_max_x (car box_max)))
+            (if (> (cadr box_max) overall_max_y) (setq overall_max_y (cadr box_max)))
+            (if (> (caddr box_max) overall_max_z) (setq overall_max_z (caddr box_max)))
+          )
+        )
+      )
+    )
+    (setq i (1+ i))
+  )
+  (if (not got_box)
+    nil
+    (progn
+      (setq mid_z (/ (+ overall_min_z overall_max_z) 2.0))
+      (cond
+        ((= mode "bp_tl") (list overall_min_x overall_max_y mid_z))
+        ((= mode "bp_tr") (list overall_max_x overall_max_y mid_z))
+        ((= mode "bp_bl") (list overall_min_x overall_min_y mid_z))
+        ((= mode "bp_br") (list overall_max_x overall_min_y mid_z))
+        ((= mode "bp_center")
+         (list (/ (+ overall_min_x overall_max_x) 2.0)
+               (/ (+ overall_min_y overall_max_y) 2.0)
+               mid_z))
+        (T (list overall_min_x overall_max_y mid_z)) ;; 未知模式时默认左上
+      )
+    )
+  )
+)
+
+(defun CreateLibraryBlockFromSelection ( / ss block_name target_folder
+                                          save_path base_pt old_filedia old_cmdecho
+                                          overwrite_answer)
+  "Prompt the user to select objects, name them, and save the selection as
+   a new block DWG file inside the currently selected library category"
+  (if (not (and *library_path* (vl-file-directory-p *library_path*)))
+    (princ "\n尚未设置有效的图块库路径，请先设置库路径。")
+    (progn
+      (princ "\n请选择要制作成图块的对象：")
+      (setq ss (ssget))
+      (if (not ss)
+        (princ "\n未选择任何对象，操作已取消。")
+        (progn
+          ;; Ask for a valid block/file name via a small dialog (supports
+          ;; picking a TXT/MTEXT object's content as the name)
+          (setq block_name (GetBlockNameFromDialog))
+          (if (not block_name)
+            (princ "\n已取消，未输入图块名称。")
+            (progn
+          (setq target_folder *library_path*)
+          (if (and *current_subfolder* (/= *current_subfolder* "Main"))
+            (setq target_folder (strcat *library_path* *current_subfolder* "\\"))
+          )
+          (if (not (vl-file-directory-p target_folder))
+            (vl-mkdir target_folder)
+          )
+          (setq save_path (strcat target_folder block_name ".dwg"))
+          ;; Confirm overwrite if a block with this name already exists
+          (setq overwrite_answer "Y")
+          (if (findfile save_path)
+            (progn
+              (initget "Yes No")
+              (setq overwrite_answer
+                (getkword (strcat "\n\"" block_name "\" 已存在于该分类中，是否覆盖？[Yes/No] <No>: ")))
+              (if (not overwrite_answer) (setq overwrite_answer "No"))
+              (setq overwrite_answer (if (= overwrite_answer "Yes") "Y" "N"))
+            )
+          )
+          (if (/= overwrite_answer "Y")
+            (princ "\n已取消，未覆盖现有图块。")
+            (progn
+              (setq base_pt (ComputeLibraryBlockBasePoint ss *bsdw_pending_basepoint*))
+              (if (not base_pt)
+                (progn
+                  (setq base_pt (getpoint "\n无法自动计算基点，请手动指定图块插入基点: "))
+                  (if (not base_pt) (setq base_pt (list 0 0 0)))
+                )
+              )
+              (setq old_filedia (getvar "FILEDIA"))
+              (setq old_cmdecho (getvar "CMDECHO"))
+              (setvar "FILEDIA" 0)
+              (setvar "CMDECHO" 0)
+              (if (findfile save_path)
+                (vl-file-delete save_path)
+              )
+              ;; -WBLOCK: output file, "" = define new drawing, base point, selection set, "" ends selection
+              (command "_.-WBLOCK" save_path "" base_pt ss "")
+              ;; -WBLOCK erases the selected objects from the current drawing after
+              ;; writing them out; OOPS restores them exactly as they were, so the
+              ;; original objects stay untouched and are NOT converted into a block
+              (command "_.OOPS")
+              (setvar "FILEDIA" old_filedia)
+              (setvar "CMDECHO" old_cmdecho)
+              (if (findfile save_path)
+                (progn
+                  (princ (strcat "\n图块已保存：" save_path))
+                  ;; Rescan so the new block shows up immediately (keeps the
+                  ;; last-used category, see SaveCurrentSubfolder/LoadCurrentSubfolder)
+                  (ScanBlockLibrary)
+                )
+                (princ "\n图块保存失败。")
+              )
+            )
+          )
+            )
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
 (defun ClearLibrarySelection ()
   "Clear all selected library blocks"
   (setq *selected_library_blocks* nil)
   (setq *selected_library_block_info* nil)
   (setq *library_quantities* nil)
-  ;; Refresh dialog
-  (done_dialog 2)
+  ;; Update the selected list in-place - no need to rebuild/reload the dialog
+  (UpdateSelectedLibraryBlocks)
 )
 
 (defun RemoveLibrarySelection (index / new_blocks new_block_info new_quantities i)
@@ -604,28 +1362,8 @@
       (setq *selected_library_block_info* new_block_info)
       (setq *library_quantities* new_quantities)
       
-      ;; Refresh dialog
-      (done_dialog 2)
-    )
-  )
-)
-
-(defun UpdateLibraryQuantity (index new_value / qty new_list i)
-  "Update quantity for selected library block at specific index"
-  (setq qty (atoi new_value))
-  (if (and (> qty 0) (>= index 1) (<= index (length *library_quantities*)))
-    (progn
-      ;; Rebuild the list with the new value at the correct index
-      (setq new_list nil)
-      (setq i 1)
-      (foreach old_qty *library_quantities*
-        (if (= i index)
-          (setq new_list (append new_list (list qty)))  ;; Replace with new value
-          (setq new_list (append new_list (list old_qty)))  ;; Keep old value
-        )
-        (setq i (+ i 1))
-      )
-      (setq *library_quantities* new_list)
+      ;; Update the selected list in-place - no need to rebuild/reload the dialog
+      (UpdateSelectedLibraryBlocks)
     )
   )
 )
@@ -1007,6 +1745,27 @@
             ;; Update displays
             (UpdateLibraryList)
             (UpdateSelectedLibraryBlocks)
+            (RefreshFavoriteList)
+            
+            ;; Populate the scrollable category list when there are too many
+            ;; subfolders to show as tab-button rows
+            (if *library_tabs_as_list*
+              (progn
+                (start_list "subfolder_list")
+                (foreach subfolder_name *library_subfolders*
+                  (add_list subfolder_name)
+                )
+                (end_list)
+                ;; Highlight the currently active category, if found
+                (setq i 0)
+                (foreach subfolder_name *library_subfolders*
+                  (if (equal subfolder_name *current_subfolder*)
+                    (set_tile "subfolder_list" (itoa i))
+                  )
+                  (setq i (+ i 1))
+                )
+              )
+            )
             
             ;; Initialize scale radio buttons
             (if (equal *insertion_scale* "1.0")
@@ -1020,18 +1779,22 @@
               )
             )
             
-            ;; Handle scale radio button changes
-            (action_tile "scale_1x" "(setq *insertion_scale* \"1.0\")")
-            (action_tile "scale_01x" "(setq *insertion_scale* \"0.1\")")
+            ;; Handle scale radio button changes - also persist the choice
+            (action_tile "scale_1x" "(SetInsertionScale \"1.0\")")
+            (action_tile "scale_01x" "(SetInsertionScale \"0.1\")")
             
-            ;; Handle tab buttons for subfolders
-            (if *library_subfolders*
-              (progn
-                (setq tab_index 1)
-                (foreach subfolder_name *library_subfolders*
-                  (setq tab_key (strcat "tab_" (itoa tab_index)))
-                  (action_tile tab_key (strcat "(SwitchToSubfolder \"" subfolder_name "\")"))
-                  (setq tab_index (+ tab_index 1))
+            ;; Handle category selection - either the scrollable list (when
+            ;; there are too many subfolders) or the individual tab buttons
+            (if *library_tabs_as_list*
+              (action_tile "subfolder_list" "(HandleSubfolderListSelection $value)")
+              (if *library_subfolders*
+                (progn
+                  (setq tab_index 1)
+                  (foreach subfolder_name *library_subfolders*
+                    (setq tab_key (strcat "tab_" (itoa tab_index)))
+                    (action_tile tab_key (strcat "(SwitchToSubfolder \"" subfolder_name "\")"))
+                    (setq tab_index (+ tab_index 1))
+                  )
                 )
               )
             )
@@ -1042,23 +1805,28 @@
             ;; Handle set path button
             (action_tile "set_path" "(SetLibraryPathFromDialog)")
             
+            ;; Handle open path button
+            (action_tile "open_path" "(OpenLibraryFolder)")
+            
             ;; Handle clear selection button
             (action_tile "clear_selection" "(ClearLibrarySelection)")
             
-            ;; Handle quantity changes for selected blocks
-            (if *selected_library_blocks*
-              (progn
-                (setq i 1)
-                (repeat (length *selected_library_blocks*)
-                  (setq tile_key (strcat "lib_quantity" (itoa i)))
-                  (action_tile tile_key (strcat "(UpdateLibraryQuantity " (itoa i) " $value)"))
-                  ;; Handle remove button for each selected block
-                  (setq remove_key (strcat "remove_btn" (itoa i)))
-                  (action_tile remove_key (strcat "(RemoveLibrarySelection " (itoa i) ")"))
-                  (setq i (+ i 1))
-                )
-              )
-            )
+            ;; Handle favorites list selection - switch library path
+            ;; (RefreshFavoriteList re-highlights the matching item after reload)
+            (action_tile "fav_list" "(HandleFavoriteListSelection $value)")
+            
+            ;; Handle add-to-favorites button
+            (action_tile "fav_add_btn" "(AddCurrentPathToFavorites)")
+            
+            ;; Handle remove-favorite button
+            (action_tile "fav_del_btn" "(RemoveSelectedFavorite)")
+            
+            ;; Handle create-block button: must close the modal dialog first
+            ;; so the user can pick objects on screen (done via result 3 below)
+            (action_tile "create_block_btn" "(done_dialog 3)")
+            
+            ;; Handle click on a selected block in the list - removes that selection
+            (action_tile "selected_list" "(RemoveLibrarySelection (1+ (atoi $value)))")
             
             ;; Handle OK button
             (action_tile "ok" "(done_dialog 1)")
@@ -1086,6 +1854,11 @@
               ((= result 2)
                 ;; Refresh dialog (continue loop)
                 T
+              )
+              ((= result 3)
+                ;; Create-block button: dialog is now closed, safe to select
+                ;; objects on screen; reopen dialog afterwards (continue loop)
+                (CreateLibraryBlockFromSelection)
               )
               (T
                 ;; Cancel or close
@@ -1323,6 +2096,24 @@
   (princ)
 )
 
+(defun SaveCurrentSubfolder (subfolder_name / reg_key)
+  "Save the last-used library category/subfolder to the registry"
+  (setq reg_key "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW")
+  (vl-catch-all-apply 'vl-registry-write (list reg_key "CurrentSubfolder" subfolder_name))
+  (princ)
+)
+
+(defun LoadCurrentSubfolder ( / reg_key saved)
+  "Load the last-used library category/subfolder from the registry"
+  (setq reg_key "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW")
+  (setq saved nil)
+  (if (not (vl-catch-all-error-p
+             (vl-catch-all-apply 'vl-registry-read (list reg_key "CurrentSubfolder"))))
+    (setq saved (vl-registry-read reg_key "CurrentSubfolder"))
+  )
+  saved
+)
+
 (defun SaveLibraryPath (path_string / reg_key)
   "Save library path to Windows registry"
   (setq reg_key "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW")
@@ -1388,6 +2179,84 @@
     (progn
       (setq *library_path* saved_path)
       (princ (strcat "\n已加载保存的库路径：" saved_path))
+      T
+    )
+    nil
+  )
+)
+
+(defun SetInsertionScale (scale_string)
+  "Set the current insertion scale and permanently save it as the preference"
+  (setq *insertion_scale* scale_string)
+  (SaveInsertionScale scale_string)
+  (princ)
+)
+
+(defun SaveInsertionScale (scale_string / reg_key)
+  "Save insertion scale to Windows registry"
+  (setq reg_key "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW")
+  
+  ;; Try to save to registry using vl-registry-write
+  (if (vl-catch-all-error-p 
+        (vl-catch-all-apply 'vl-registry-write 
+          (list reg_key "InsertionScale" scale_string)))
+    (progn
+      ;; If registry fails, try to save to a config file
+      (SaveInsertionScaleToFile scale_string)
+    )
+    (princ "\n插入比例已保存。")
+  )
+)
+
+(defun SaveInsertionScaleToFile (scale_string / config_file config_path)
+  "Save insertion scale to a configuration file as backup"
+  (setq config_path (strcat (getvar "ROAMABLEROOTPREFIX") "BSDW_ScaleConfig.txt"))
+  (setq config_file (open config_path "w"))
+  
+  (if config_file
+    (progn
+      (write-line scale_string config_file)
+      (close config_file)
+      (princ (strcat "\n插入比例已保存到配置文件：" config_path))
+    )
+    (princ "\n警告：无法永久保存插入比例。")
+  )
+)
+
+(defun LoadInsertionScale (/ reg_key saved_scale config_path config_file)
+  "Load insertion scale from registry or config file"
+  (setq reg_key "HKEY_CURRENT_USER\\Software\\AutoCAD\\BSDW")
+  (setq saved_scale nil)
+  
+  ;; Try to load from registry first
+  (if (not (vl-catch-all-error-p 
+             (vl-catch-all-apply 'vl-registry-read (list reg_key "InsertionScale"))))
+    (setq saved_scale (vl-registry-read reg_key "InsertionScale"))
+  )
+  
+  ;; If registry fails, try to load from config file
+  (if (not saved_scale)
+    (progn
+      (setq config_path (strcat (getvar "ROAMABLEROOTPREFIX") "BSDW_ScaleConfig.txt"))
+      (if (findfile config_path)
+        (progn
+          (setq config_file (open config_path "r"))
+          (if config_file
+            (progn
+              (setq saved_scale (read-line config_file))
+              (close config_file)
+            )
+          )
+        )
+      )
+    )
+  )
+  
+  ;; Validate and set the loaded scale (only accept the known valid values)
+  (if (and saved_scale (or (equal saved_scale "1.0") (equal saved_scale "0.1")))
+    (progn
+      (setq *insertion_scale* saved_scale)
+      (princ (strcat "\n已加载保存的插入比例：" saved_scale))
       T
     )
     nil
