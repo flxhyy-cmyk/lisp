@@ -454,7 +454,13 @@
   )
   ;; 有行被删（清空）才触发槽位压缩：把柜块（及其独享表头，若有）的
   ;;   规格/数量/名称/型号 槽位物理往上搬，空槽只留在每个块的末尾。
-  (setq cp (if (> ndel 0) (bms:compactall) nil))
+  (setq cp (if (> ndel 0) (vl-catch-all-apply 'bms:compactall nil) nil))
+  (if (vl-catch-all-error-p cp)
+    (progn
+      (bms:dbg (strcat "!! compactall 整体报错：" (vl-catch-all-error-message cp)))
+      (setq cp nil)
+    )
+  )
   (if cp (setq cpcab (nth 0 cp) cphdr (nth 1 cp) cpskip (nth 2 cp)))
   (strcat
     "已写入 " (itoa nrow) " 行改动 / 属性 " (itoa ncell) " 格"
@@ -470,52 +476,132 @@
       (strcat SEP "  已清空 " (itoa ndel) " 行（含数量属性 " (itoa nqty) " 格），"
               "对应柜块槽位已归零。") "")
     (if (and cpcab (> cpcab 0))
-      (strcat SEP "  已压缩 " (itoa cpcab) " 台柜的槽位（含 " (itoa cphdr)
-              " 台独享表头同步压缩），中间空槽已上移，空槽只留在每个块末尾。") "")
-    (if (and cpskip (> cpskip 0))
-      (strcat SEP "  提示：" (itoa cpskip)
-              " 台柜的表头被别的柜共用，为避免连带搞乱共用这个表头的其它柜，"
-              "本次跳过了这几台柜的槽位压缩，槽位仍留空在原位，需要的话手动核对后再处理。") "")
+      (strcat SEP "  已压缩 " (itoa cpcab) " 台柜的槽位（涉及 " (itoa cphdr)
+              " 个表头分组同步压缩），中间空槽已上移，空槽只留在每排/每块末尾。") "")
     SEP "  没存盘，改动都在内存里；想刷新图上的元器件明细表页，再跑一次 UPDBOM。"
   )
 )
 
 ;; ================================================================
-;; 四之二、槽位压缩（删除中间行后，把柜块 / 独享表头的槽位物理往上搬，
-;;   使空槽只会留在每个块的末尾，不会卡在中间）
+;; 四之二、槽位压缩（删除中间行后，把柜块 / 表头的槽位物理往上搬，
+;;   使空槽只会留在末尾，不会卡在中间）
 ;; ------------------------------------------------------------
-;; 只压缩「柜块自己的 规格/数量」+「柜配到的表头的 名称/型号」这一对
-;;   同步槽号；判占用只看柜自己的 规格/数量（数量不该单独占位）。
-;; 表头若被多台柜共用（同一表头槽号被不止一台柜引用），为避免把还在
-;;   用那个槽号的其它柜的名称/型号带乱，这台柜（连同它这份共用表头）
-;;   本轮整体跳过，不挪位，留给用户自己核对处理。
-;; 挪位前先把要保留的槽整表「快照」出来，再按新槽号整体重写，
+;; 表头「名称/型号」跟柜「规格/数量」是同一套槽号对应的——所以压缩
+;;   不能只看一台柜：同一个表头配给了好几台柜时，这几台柜 + 这个表头
+;;   要当成「一整排」同步压缩，槽号在整排范围内统一往上搬。
+;;   某个槽号只要整排里有任何一台柜还在用（或表头自己还有名称/型号），
+;;   这一列就保留；一整列（表头 + 所有柜在这个槽号的内容）整体搬到
+;;   新槽号，哪怕某台柜在这一列本来就是空的，也跟着一起挪，这样才能
+;;   保证挪完之后每台柜的槽号跟表头的槽号还对得上。
+;; 没配到表头的柜（单块样式，名称/型号在柜自己身上）不存在共用问题，
+;;   独立压缩即可。
+;; 挪位前都是先把要保留的整表「快照」出来，再按新槽号整体重写，
 ;;   避免新旧槽号有重叠时互相覆盖。
 ;; ================================================================
 
-;; 单台柜是否存在「中间空档」（用于统计跳过台数时避免把本来就没问题
-;;   的柜也算进「提示」里）
-(defun bms:compact-need (catt / sl keep i k need s)
-  (setq sl (bms:slots catt) keep nil)
-  (foreach s sl
-    (if (or (/= (bms:trim (nth 2 (cdr s))) "") (/= (bms:trim (nth 3 (cdr s))) ""))
-      (setq keep (append keep (list (car s))))
+;; 调试用：包一层 vl-catch-all-apply，出错就打印出来（带上是谁、干嘛的、
+;;   传了什么参数），不让一次写失败就把整排/整台柜甚至整个压缩流程带崩。
+;;   返回 T = 这次调用本身成功且结果为真 / nil = 结果为假或直接报错
+(defun bms:cptry (fn args who / r)
+  (setq r (vl-catch-all-apply fn args))
+  (cond
+    ((vl-catch-all-error-p r)
+     (bms:dbg (strcat "!! " who " 报错：" (vl-catch-all-error-message r)
+                       "  参数=" (vl-prin1-to-string args)))
+     nil
     )
+    ((null r)
+     (bms:dbg (strcat "!! " who " 返回 nil（写入未生效）  参数=" (vl-prin1-to-string args)))
+     nil
+    )
+    (T T)
+  )
+)
+
+;; 压缩「一整排」：一个表头 + 配到它的所有柜，槽号同步搬。
+;;   返回 T = 确实挪了 / nil = 这一排本来就没有中间空档，没动
+(defun bms:compact-group (hdr cabs / hatt hsl maxk cabdata cd cab catt csl
+                            k keep i s nm md sp qy any need)
+  (setq hatt (nth 3 hdr) hsl (bms:slots hatt))
+  (bms:dbg (strcat "compact-group 表头=" (bms:hnd (car hdr))
+                    "  柜数=" (itoa (length cabs))))
+  (setq maxk 0)
+  (foreach s hsl (if (> (car s) maxk) (setq maxk (car s))))
+  (setq cabdata nil)
+  (foreach cab cabs
+    (setq catt (nth 3 cab) csl (bms:slots catt))
+    (foreach s csl (if (> (car s) maxk) (setq maxk (car s))))
+    (setq cabdata (append cabdata (list (list catt csl (bms:hnd (car cab))))))
+  )
+  ;; 逐槽号判断：整排里（表头自己 或 任意一台柜）只要还有数据，这一列就留着
+  (setq keep nil k 1)
+  (while (<= k maxk)
+    (setq s (assoc k hsl))
+    (setq any (and s (or (/= (bms:trim (nth 0 (cdr s))) "") (/= (bms:trim (nth 1 (cdr s))) ""))))
+    (foreach cd cabdata
+      (if (not any)
+        (progn
+          (setq s (assoc k (cadr cd)))
+          (if (and s (or (/= (bms:trim (nth 2 (cdr s))) "") (/= (bms:trim (nth 3 (cdr s))) "")))
+            (setq any T)
+          )
+        )
+      )
+    )
+    (if any (setq keep (append keep (list k))))
+    (setq k (1+ k))
   )
   (setq i 1 need nil)
   (foreach k keep (progn (if (/= k i) (setq need T)) (setq i (1+ i))))
-  need
+  (bms:dbg (strcat "  maxk=" (itoa maxk) "  keep=" (vl-prin1-to-string keep)
+                    "  need=" (if need "T" "nil")))
+  (if (and need (> maxk 0))
+    (progn
+      ;; 1. 按新槽号整列整列重写（表头这一格 + 每台柜这一格），
+      ;;    所有旧槽值都是从快照（hsl / 各柜的 csl）里取的，
+      ;;    新旧槽号有重叠也不会互相覆盖
+      (setq i 1)
+      (foreach k keep
+        (setq s (assoc k hsl))
+        (setq nm (if s (nth 0 (cdr s)) "") md (if s (nth 1 (cdr s)) ""))
+        (bms:dbg (strcat "  整排搬 " (itoa k) " -> " (itoa i)
+                          "  表头名称=[" nm "] 型号=[" md "]"))
+        (bms:cptry 'plt:put (list hatt (plt:tagk i "名称") nm T) "plt:put(表头名称)")
+        (bms:cptry 'plt:put (list hatt (plt:tagk i "型号") md T) "plt:put(表头型号)")
+        (foreach cd cabdata
+          (setq catt (car cd) csl (cadr cd))
+          (setq s (assoc k csl))
+          (setq sp (if s (nth 2 (cdr s)) "") qy (if s (nth 3 (cdr s)) ""))
+          (bms:dbg (strcat "    柜=" (caddr cd) "  规格=[" sp "] 数量=[" qy "]"))
+          (bms:cptry 'plt:putspec (list catt i sp T) "plt:putspec(规格)")
+          (bms:cptry 'plt:put (list catt (plt:tagk i "数量") qy T) "plt:put(数量)")
+        )
+        (setq i (1+ i))
+      )
+      ;; 2. 多出来的尾列（表头 + 每台柜）整段清空
+      (while (<= i maxk)
+        (bms:dbg (strcat "  清空整排尾列 " (itoa i)))
+        (bms:cptry 'plt:put (list hatt (plt:tagk i "名称") "" T) "plt:put(清表头名称)")
+        (bms:cptry 'plt:put (list hatt (plt:tagk i "型号") "" T) "plt:put(清表头型号)")
+        (foreach cd cabdata
+          (setq catt (car cd))
+          (bms:cptry 'plt:putspec (list catt i "" T) "plt:putspec(清规格)")
+          (bms:cptry 'plt:put (list catt (plt:tagk i "数量") "" T) "plt:put(清数量)")
+        )
+        (setq i (1+ i))
+      )
+      T
+    )
+    nil
+  )
 )
 
-;; 压缩一台柜（及其配到的表头，若有）：按柜自己的占用情况算新槽号，
-;;   柜的 规格/数量 与 表头（无表头则柜自身）的 名称/型号 同步搬。
-;;   返回 T = 确实挪了 / nil = 本来就没有中间空档，没动
-(defun bms:compact-pair (cab hdr / catt hatt csl hsl keep maxk i s k
-                          nm md sp qy need)
+;; 压缩没配到表头的柜（单块样式：名称/型号也存在柜自己身上，不存在
+;;   共用问题，独立压缩即可）。返回 T = 确实挪了 / nil = 没动
+(defun bms:compact-solo (cab / catt csl maxk keep i s k nm md sp qy need)
   (setq catt (nth 3 cab))
-  (setq hatt (if hdr (nth 3 hdr) catt))
+  (bms:dbg (strcat "compact-solo 柜=" (bms:hnd (car cab)) "（无表头/单块样式）"))
   (setq csl (bms:slots catt))
-  (setq hsl (if hdr (bms:slots hatt) csl))
   (setq maxk 0)
   (foreach s csl (if (> (car s) maxk) (setq maxk (car s))))
   (setq keep nil)
@@ -526,44 +612,26 @@
   )
   (setq i 1 need nil)
   (foreach k keep (progn (if (/= k i) (setq need T)) (setq i (1+ i))))
+  (bms:dbg (strcat "  maxk=" (itoa maxk) "  keep=" (vl-prin1-to-string keep)
+                    "  need=" (if need "T" "nil")))
   (if (and need (> maxk 0))
     (progn
-      ;; 1. 按新槽号整体重写保留下来的槽（值先从旧槽快照出来，再落到
-      ;;    新槽，新旧槽号即使有重叠也不会互相覆盖）
       (setq i 1)
       (foreach k keep
         (setq s (assoc k csl))
-        (setq sp (nth 2 (cdr s)) qy (nth 3 (cdr s)))
-        (setq s (assoc k hsl))
-        (setq nm (if s (nth 0 (cdr s)) "") md (if s (nth 1 (cdr s)) ""))
-        (plt:putspec catt i sp T)
-        (plt:put catt (plt:tagk i "数量") qy T)
-        (if hdr
-          (progn
-            (plt:put hatt (plt:tagk i "名称") nm T)
-            (plt:put hatt (plt:tagk i "型号") md T)
-          )
-          (progn
-            (plt:put catt (plt:tagk i "名称") nm T)
-            (plt:put catt (plt:tagk i "型号") md T)
-          )
-        )
+        (setq sp (nth 2 (cdr s)) qy (nth 3 (cdr s)) nm (nth 0 (cdr s)) md (nth 1 (cdr s)))
+        (bms:dbg (strcat "  搬 " (itoa k) " -> " (itoa i)))
+        (bms:cptry 'plt:putspec (list catt i sp T) "plt:putspec(规格)")
+        (bms:cptry 'plt:put (list catt (plt:tagk i "数量") qy T) "plt:put(数量)")
+        (bms:cptry 'plt:put (list catt (plt:tagk i "名称") nm T) "plt:put(柜自身名称)")
+        (bms:cptry 'plt:put (list catt (plt:tagk i "型号") md T) "plt:put(柜自身型号)")
         (setq i (1+ i))
       )
-      ;; 2. 多出来的尾部槽整段清空
       (while (<= i maxk)
-        (plt:putspec catt i "" T)
-        (plt:put catt (plt:tagk i "数量") "" T)
-        (if hdr
-          (progn
-            (plt:put hatt (plt:tagk i "名称") "" T)
-            (plt:put hatt (plt:tagk i "型号") "" T)
-          )
-          (progn
-            (plt:put catt (plt:tagk i "名称") "" T)
-            (plt:put catt (plt:tagk i "型号") "" T)
-          )
-        )
+        (bms:cptry 'plt:putspec (list catt i "" T) "plt:putspec(清规格)")
+        (bms:cptry 'plt:put (list catt (plt:tagk i "数量") "" T) "plt:put(清数量)")
+        (bms:cptry 'plt:put (list catt (plt:tagk i "名称") "" T) "plt:put(清柜自身名称)")
+        (bms:cptry 'plt:put (list catt (plt:tagk i "型号") "" T) "plt:put(清柜自身型号)")
         (setq i (1+ i))
       )
       T
@@ -572,40 +640,44 @@
   )
 )
 
-;; 全图扫一遍，逐台柜压缩；返回 (压缩台数 . (含表头台数 . 跳过台数))
-;;   写成 (ncab nhdr nskip) 三元表
-(defun bms:compactall ( / sc cabs hdrs cab hdr husers hit ncab nhdr nskip)
+;; 全图扫一遍：按配到的表头分组（同一表头配给的几台柜算一排，整排
+;;   同步压缩），没配到表头的柜各自独立压缩。
+;;   返回 (压缩柜数 参与压缩的表头分组数 0) —— 第三项保留占位，不再用于「跳过」
+(defun bms:compactall ( / sc cabs hdrs cab hdr groups hit solo g ncab nhdr)
   (setq sc (bms:scan) cabs (car sc) hdrs (cadr sc))
-  (setq ncab 0 nhdr 0 nskip 0 husers nil)
-  ;; 先统计每个表头被几台柜配到（判断是否「共用」）
+  (bms:dbg (strcat ">> compactall 开始：柜 " (itoa (length cabs))
+                    " 台，表头 " (itoa (length hdrs)) " 个"))
+  (setq ncab 0 nhdr 0 groups nil solo nil)
   (foreach cab cabs
     (setq hdr (bms:pair hdrs cab))
     (if hdr
       (progn
-        (setq hit (assoc (car hdr) husers))
+        (setq hit (assoc (car hdr) groups))
         (if hit
-          (setq husers (subst (cons (car hdr) (1+ (cdr hit))) hit husers))
-          (setq husers (append husers (list (cons (car hdr) 1))))
+          (setq groups (subst (list (car hdr) hdr (cons cab (caddr hit))) hit groups))
+          (setq groups (append groups (list (list (car hdr) hdr (list cab)))))
         )
       )
+      (setq solo (append solo (list cab)))
     )
   )
-  (foreach cab cabs
-    (setq hdr (bms:pair hdrs cab))
-    (if (and hdr (> (cdr (assoc (car hdr) husers)) 1))
-      ;; 表头被多台柜共用：跳过（有中间空档才计入「跳过」提示，
-      ;;   避免把本来就规整的柜也算进提示数里）
-      (if (bms:compact-need (nth 3 cab)) (setq nskip (1+ nskip)))
-      ;; 没有表头，或表头只有这一台柜在用：可以安全同步压缩
-      (if (bms:compact-pair cab hdr)
-        (progn
-          (setq ncab (1+ ncab))
-          (if hdr (setq nhdr (1+ nhdr)))
-        )
+  (foreach g groups
+    (bms:dbg (strcat "表头 " (bms:hnd (car (cadr g))) "  配到 " (itoa (length (caddr g))) " 台柜"))
+    (if (bms:compact-group (cadr g) (caddr g))
+      (progn
+        (setq ncab (+ ncab (length (caddr g))) nhdr (1+ nhdr))
+        (bms:dbg "  -> 已整排压缩")
       )
+      (bms:dbg "  -> 本来就没有中间空档，无需处理")
     )
   )
-  (list ncab nhdr nskip)
+  (foreach cab solo
+    (if (bms:compact-solo cab)
+      (progn (setq ncab (1+ ncab)) (bms:dbg "  -> 已压缩（单块样式）"))
+    )
+  )
+  (bms:dbg (strcat "<< compactall 结束：压缩 " (itoa ncab) " 台柜（涉及 " (itoa nhdr) " 个表头分组）"))
+  (list ncab nhdr 0)
 )
 
 ;; ================================================================
